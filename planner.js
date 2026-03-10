@@ -214,6 +214,145 @@ var ACTIVITY_TEMPLATES_BY_TYPE = {
   }
 };
 
+var PLACE_SUGGESTIONS_BY_TYPE = {
+  city: {
+    morning: [
+      "historische Altstadt",
+      "Aussichtspunkt",
+      "Museum",
+      "lokales Caféviertel",
+      "Markthalle"
+    ],
+    afternoon: [
+      "bekannte Sehenswürdigkeit",
+      "Stadtviertel mit kleinen Läden",
+      "Flusspromenade",
+      "Kulturviertel",
+      "zentraler Markt"
+    ],
+    evening: [
+      "Restaurantviertel",
+      "Sonnenuntergangsspot",
+      "belebte Altstadt",
+      "lokale Bargegend",
+      "kleiner Kulturort"
+    ]
+  },
+  beach: {
+    morning: [
+      "Strandpromenade",
+      "ruhiger Küstenabschnitt",
+      "Beach Café",
+      "Frühstück mit Meerblick"
+    ],
+    afternoon: [
+      "Strandbucht",
+      "Bootssteg",
+      "Küstenwanderung",
+      "Beach Club"
+    ],
+    evening: [
+      "Sonnenuntergangspunkt am Meer",
+      "Seafood-Restaurant",
+      "Strandbar",
+      "Küstenpromenade"
+    ]
+  },
+  nature: {
+    morning: [
+      "Naturpfad",
+      "Aussichtspunkt",
+      "Waldroute",
+      "ruhiger Seezugang"
+    ],
+    afternoon: [
+      "Wasserfall",
+      "Nationalparkbereich",
+      "Panoramaroute",
+      "Picknickplatz im Grünen"
+    ],
+    evening: [
+      "Panorama-Spot",
+      "ruhige Berghütte",
+      "Naturrestaurant",
+      "Abendspaziergang im Grünen"
+    ]
+  },
+  food: {
+    morning: [
+      "lokale Bäckerei",
+      "Markthalle",
+      "Frühstückscafé",
+      "Feinkostladen"
+    ],
+    afternoon: [
+      "Street-Food-Markt",
+      "bekanntes Lokal",
+      "kulinarisches Viertel",
+      "Food Market"
+    ],
+    evening: [
+      "Restaurant mit regionaler Küche",
+      "Weinbar",
+      "Dessert-Café",
+      "bekannter Food-Spot"
+    ]
+  }
+};
+
+var DESTINATION_PLACE_SUGGESTIONS = {
+  istanbul: {
+    city: {
+      morning: ["Hagia Sophia", "Topkapi-Palast", "Galata-Turm"],
+      afternoon: ["Grand Bazaar", "Basilica Cistern", "Sultanahmet"],
+      evening: ["Galataport", "Kadıköy", "Bosporus-Ufer"]
+    },
+    food: {
+      morning: ["lokale Bäckerei in Karaköy", "Markthalle in Kadıköy"],
+      afternoon: ["Grand Bazaar", "Street-Food-Stände in Eminönü"],
+      evening: ["Meyhane in Beyoğlu", "Dessert-Café in Karaköy"]
+    }
+  },
+  porto: {
+    city: {
+      morning: ["Ribeira", "Livraria Lello", "Clérigos-Turm"],
+      afternoon: ["São Bento", "Rua das Flores", "Uferpromenade am Douro"],
+      evening: ["Vila Nova de Gaia", "Miradouro da Vitória", "Altstadtgassen"]
+    },
+    food: {
+      morning: ["Mercado do Bolhão", "lokales Café in der Altstadt"],
+      afternoon: ["Food-Spots rund um Ribeira", "Marktstände im Zentrum"],
+      evening: ["Restaurant am Douro", "Weinbar in Gaia"]
+    }
+  },
+  paris: {
+    city: {
+      morning: ["Louvre", "Montmartre", "Jardin du Luxembourg"],
+      afternoon: ["Notre-Dame", "Le Marais", "Seine-Ufer"],
+      evening: ["Eiffelturm", "Saint-Germain", "Aussichtspunkt in Montmartre"]
+    },
+    food: {
+      morning: ["Bäckerei im Marais", "Café in Saint-Germain"],
+      afternoon: ["Marktstraße in Paris", "lokales Bistro"],
+      evening: ["Brasserie", "Dessert-Café", "Weinbar"]
+    }
+  },
+  ibiza: {
+    beach: {
+      morning: ["Playa d’en Bossa", "Cala Comte", "ruhige Strandpromenade"],
+      afternoon: ["Küstenabschnitt bei Cala Bassa", "Bootssteg", "Beach Club"],
+      evening: ["Sonnenuntergangspunkt an der Küste", "Restaurant am Meer", "Strandbar"]
+    }
+  },
+  zermatt: {
+    nature: {
+      morning: ["Wanderweg mit Matterhorn-Blick", "Aussichtspunkt", "ruhiger Naturpfad"],
+      afternoon: ["Panoramaroute", "Naturpfad oberhalb des Dorfes", "Picknickplatz im Grünen"],
+      evening: ["Aussichtspunkt bei Sonnenuntergang", "ruhiges Bergrestaurant", "Abendspaziergang"]
+    }
+  }
+};
+
 var currencyFormatter = new Intl.NumberFormat("de-DE", {
   style: "currency",
   currency: "EUR"
@@ -230,6 +369,13 @@ var PDF_EXPORT_UNAVAILABLE_MESSAGE = "PDF-Export ist aktuell nicht verfügbar. B
 var PDF_EXPORT_ERROR_MESSAGE = "PDF konnte nicht erstellt werden. Bitte versuche es erneut.";
 var PDF_EXPORT_NO_PLAN_MESSAGE = "Bitte generiere zuerst einen Reiseplan.";
 var COLLAB_PLAN_UPDATED_MESSAGE = "Plan wurde aktualisiert";
+var SHARE_ROUTE_PATH = "/plan";
+var SAVED_PLAN_STORAGE_KEY = "flyra_saved_plan";
+var SLOT_ICONS = {
+  morning: "☕",
+  afternoon: "📍",
+  evening: "🍽"
+};
 var plannerInitializationDone = false;
 var currentPlan = null;
 var currentTripId = null;
@@ -369,6 +515,237 @@ function normalizeTripType(tripType) {
 function getTripTypeLabel(tripType) {
   var normalized = normalizeTripType(tripType);
   return TRIP_TYPE_LABELS[normalized] || TRIP_TYPE_LABELS.city;
+}
+
+/**
+ * @returns {Storage | null}
+ */
+function getBrowserLocalStorage() {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return null;
+  }
+
+  try {
+    return window.localStorage;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * @param {TripPlan} plan
+ * @param {string | null | undefined} tripId
+ * @returns {any}
+ */
+function serializePlanForLocalStorage(plan, tripId) {
+  if (!plan || !plan.input || !Array.isArray(plan.itinerary)) {
+    return null;
+  }
+
+  return {
+    destination: plan.input.destination,
+    days: plan.input.days,
+    budget: plan.input.totalBudget,
+    travelType: getTripTypeLabel(plan.input.tripType),
+    tripType: normalizeTripType(plan.input.tripType),
+    tripId: tripId && isUuid(tripId) ? String(tripId) : null,
+    dailyPlan: plan.itinerary.map(function (day) {
+      return {
+        morning: String(day.morning || ""),
+        afternoon: String(day.afternoon || ""),
+        evening: String(day.evening || "")
+      };
+    }),
+    plan: plan.itinerary.map(function (day) {
+      return {
+        morning: String(day.morning || ""),
+        afternoon: String(day.afternoon || ""),
+        evening: String(day.evening || "")
+      };
+    }),
+    savedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * @param {TripPlan} plan
+ * @param {string | null | undefined} tripId
+ */
+function savePlanToLocalStorage(plan, tripId) {
+  var storage = getBrowserLocalStorage();
+  if (!storage) {
+    return;
+  }
+
+  var payload = serializePlanForLocalStorage(plan, tripId);
+  if (!payload) {
+    return;
+  }
+
+  try {
+    storage.setItem(SAVED_PLAN_STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("[Flyra LocalSave] Speichern in localStorage fehlgeschlagen.", error);
+  }
+}
+
+function clearSavedPlanFromLocalStorage() {
+  var storage = getBrowserLocalStorage();
+  if (!storage) {
+    return;
+  }
+
+  try {
+    storage.removeItem(SAVED_PLAN_STORAGE_KEY);
+  } catch (error) {
+    console.warn("[Flyra LocalSave] Löschen aus localStorage fehlgeschlagen.", error);
+  }
+}
+
+/**
+ * @param {any[]} source
+ * @returns {{morning: string, afternoon: string, evening: string}[]}
+ */
+function sanitizeSavedDailyPlan(source) {
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  return source
+    .map(function (entry) {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      return {
+        morning: String(entry.morning || ""),
+        afternoon: String(entry.afternoon || ""),
+        evening: String(entry.evening || "")
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
+ * @returns {{destination: string, days: number, budget: number, tripType: "city" | "beach" | "nature" | "food" | "surprise", travelType: string, tripId: string | null, dailyPlan: {morning: string, afternoon: string, evening: string}[]} | null}
+ */
+function loadSavedPlanFromLocalStorage() {
+  var storage = getBrowserLocalStorage();
+  if (!storage) {
+    return null;
+  }
+
+  var raw = null;
+  try {
+    raw = storage.getItem(SAVED_PLAN_STORAGE_KEY);
+  } catch (error) {
+    console.warn("[Flyra LocalSave] Lesen aus localStorage fehlgeschlagen.", error);
+    return null;
+  }
+
+  if (!raw) {
+    return null;
+  }
+
+  var parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  var destination = String(parsed.destination || "").trim();
+  var days = Number(parsed.days);
+  var budget = Number(parsed.budget);
+  var tripType = normalizeTripType(parsed.tripType || parsed.travelType || "city");
+  var travelType = getTripTypeLabel(tripType);
+  var tripId = parsed.tripId && isUuid(parsed.tripId) ? String(parsed.tripId) : null;
+  var dailyPlan = sanitizeSavedDailyPlan(parsed.dailyPlan || parsed.plan || []);
+
+  if (
+    !destination ||
+    !Number.isInteger(days) ||
+    days < 1 ||
+    days > 30 ||
+    !Number.isFinite(budget) ||
+    budget <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    destination: destination,
+    days: days,
+    budget: Number(budget.toFixed(2)),
+    tripType: tripType,
+    travelType: travelType,
+    tripId: tripId,
+    dailyPlan: dailyPlan
+  };
+}
+
+/**
+ * @param {TripPlan} plan
+ * @param {{dailyPlan: {morning: string, afternoon: string, evening: string}[]}} savedPlan
+ */
+function applySavedPlanEdits(plan, savedPlan) {
+  if (!plan || !Array.isArray(plan.itinerary) || !savedPlan || !Array.isArray(savedPlan.dailyPlan)) {
+    return;
+  }
+
+  var maxDays = Math.min(plan.itinerary.length, savedPlan.dailyPlan.length);
+  for (var dayIndex = 0; dayIndex < maxDays; dayIndex += 1) {
+    var savedDay = savedPlan.dailyPlan[dayIndex];
+    var targetDay = plan.itinerary[dayIndex];
+    if (!savedDay || !targetDay) {
+      continue;
+    }
+
+    targetDay.morning = String(savedDay.morning || "");
+    targetDay.afternoon = String(savedDay.afternoon || "");
+    targetDay.evening = String(savedDay.evening || "");
+  }
+}
+
+/**
+ * @param {TripPlan} plan
+ * @param {{destination: string, days: number, budget: number, tripType: string, tripId: string | null}} savedPlan
+ * @param {string | null | undefined} tripId
+ * @returns {boolean}
+ */
+function doesSavedPlanMatch(plan, savedPlan, tripId) {
+  if (!plan || !plan.input || !savedPlan) {
+    return false;
+  }
+
+  if (tripId && savedPlan.tripId) {
+    return String(tripId) === String(savedPlan.tripId);
+  }
+
+  return (
+    normalizeDestinationKey(plan.input.destination) === normalizeDestinationKey(savedPlan.destination) &&
+    Number(plan.input.days) === Number(savedPlan.days) &&
+    toCents(Number(plan.input.totalBudget)) === toCents(Number(savedPlan.budget)) &&
+    normalizeTripType(plan.input.tripType) === normalizeTripType(savedPlan.tripType)
+  );
+}
+
+/**
+ * @param {{destination: string, days: number, budget: number, tripType: "city" | "beach" | "nature" | "food" | "surprise"}} savedPlan
+ * @returns {TripInput}
+ */
+function mapSavedPlanToInput(savedPlan) {
+  return {
+    destination: savedPlan.destination,
+    days: savedPlan.days,
+    totalBudget: savedPlan.budget,
+    tripType: normalizeTripType(savedPlan.tripType),
+    currency: "EUR"
+  };
 }
 
 /**
@@ -1046,7 +1423,7 @@ function buildShareQuery(input, tripId) {
   params.set("destination", input.destination);
   params.set("days", String(input.days));
   params.set("budget", String(input.totalBudget));
-  params.set("type", normalizeTripType(input.tripType));
+  params.set("travelType", normalizeTripType(input.tripType));
   return "?" + params.toString();
 }
 
@@ -1059,20 +1436,17 @@ function buildShareUrl(input, tripId) {
   var query = buildShareQuery(input, tripId);
 
   if (typeof window === "undefined" || !window.location) {
-    return "planner.html" + query;
+    return SHARE_ROUTE_PATH + query;
   }
 
   if (window.location.origin && window.location.origin !== "null") {
-    var resolvedUrl = new URL(window.location.pathname, window.location.origin);
+    var resolvedUrl = new URL(SHARE_ROUTE_PATH, window.location.origin);
     resolvedUrl.search = query;
     resolvedUrl.hash = "";
     return resolvedUrl.toString();
   }
 
-  var fallbackUrl = new URL(window.location.href);
-  fallbackUrl.search = query;
-  fallbackUrl.hash = "";
-  return fallbackUrl.toString();
+  return SHARE_ROUTE_PATH + query;
 }
 
 /**
@@ -1215,8 +1589,9 @@ function getShareInputFromUrl() {
   var destinationParam = params.get("destination");
   var daysParam = params.get("days");
   var budgetParam = params.get("budget");
+  var travelTypeParam = params.get("travelType");
   var typeParam = params.get("type");
-  console.log("Restore values:", destinationParam, daysParam, budgetParam, typeParam);
+  console.log("Restore values:", destinationParam, daysParam, budgetParam, travelTypeParam || typeParam);
 
   var hasAllRequiredParams =
     destinationParam !== null &&
@@ -1250,7 +1625,7 @@ function getShareInputFromUrl() {
     destination: destination,
     days: days,
     totalBudget: Number(totalBudget.toFixed(2)),
-    tripType: normalizeTripType(typeParam || getSuggestedTripType(destination) || "city"),
+    tripType: normalizeTripType(travelTypeParam || typeParam || getSuggestedTripType(destination) || "city"),
     currency: "EUR"
   };
 }
@@ -1410,24 +1785,392 @@ function pickTemplate(slot, templateSet, destinationSeed, dayIndex) {
 }
 
 /**
+ * @param {"morning" | "afternoon" | "evening"} slot
+ * @returns {number}
+ */
+function getSlotOffset(slot) {
+  if (slot === "morning") {
+    return 0;
+  }
+  if (slot === "afternoon") {
+    return 1;
+  }
+  return 2;
+}
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+function trimSentence(text) {
+  return String(text || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/g, "");
+}
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+function normalizePhraseKey(text) {
+  var value = String(text || "").toLowerCase();
+  if (typeof value.normalize === "function") {
+    value = value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  }
+
+  return value.replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * @param {string} activityText
+ * @param {string} placeSuggestion
+ * @returns {boolean}
+ */
+function hasPlaceOverlap(activityText, placeSuggestion) {
+  var activityKey = normalizePhraseKey(activityText);
+  var placeKey = normalizePhraseKey(placeSuggestion);
+  if (!activityKey || !placeKey || placeKey.length < 4) {
+    return false;
+  }
+
+  return activityKey.indexOf(placeKey) !== -1;
+}
+
+/**
+ * @param {string} value
+ * @returns {string}
+ */
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * @param {string} value
+ * @returns {string}
+ */
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * @param {string} destination
+ * @param {"morning" | "afternoon" | "evening"} slot
+ * @returns {string[]}
+ */
+function getKnownPlaceNamesForSlot(destination, slot) {
+  var destinationKey = normalizeDestinationKey(destination);
+  if (!destinationKey) {
+    return [];
+  }
+
+  var destinationData = DESTINATION_PLACE_SUGGESTIONS[destinationKey];
+  if (!destinationData || typeof destinationData !== "object") {
+    return [];
+  }
+
+  var collected = [];
+  Object.keys(destinationData).forEach(function (typeKey) {
+    var placeSet = destinationData[typeKey];
+    if (!placeSet || typeof placeSet !== "object" || !Array.isArray(placeSet[slot])) {
+      return;
+    }
+
+    placeSet[slot].forEach(function (placeName) {
+      var normalized = String(placeName || "").trim();
+      if (normalized) {
+        collected.push(normalized);
+      }
+    });
+  });
+
+  var unique = Array.from(new Set(collected));
+  unique.sort(function (a, b) {
+    return b.length - a.length;
+  });
+  return unique;
+}
+
+/**
+ * @param {string} placeName
+ * @param {string} destination
+ * @returns {string}
+ */
+function buildMapsSearchUrl(placeName, destination) {
+  var destinationLabel = formatDestinationForDisplay(destination);
+  var query = String(placeName || "").trim() + " " + destinationLabel;
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(query.trim());
+}
+
+/**
+ * @param {string} text
+ * @param {string} destination
+ * @param {"morning" | "afternoon" | "evening"} slot
+ * @returns {string}
+ */
+function renderSlotTextWithPlaceLinks(text, destination, slot) {
+  var rawText = String(text || "");
+  var placeNames = getKnownPlaceNamesForSlot(destination, slot);
+  if (!rawText || placeNames.length === 0) {
+    return escapeHtml(rawText);
+  }
+
+  var pattern = placeNames.map(escapeRegExp).join("|");
+  var matcher = new RegExp(pattern, "gi");
+  var result = "";
+  var lastIndex = 0;
+  var match = matcher.exec(rawText);
+
+  while (match) {
+    var start = match.index;
+    var end = start + match[0].length;
+    var matchedPlace = match[0];
+
+    result += escapeHtml(rawText.slice(lastIndex, start));
+    result +=
+      '<a class="slot-place-link" href="' + escapeHtml(buildMapsSearchUrl(matchedPlace, destination)) +
+      '" target="_blank" rel="noopener noreferrer">' + escapeHtml(matchedPlace) + "</a>";
+
+    lastIndex = end;
+    match = matcher.exec(rawText);
+  }
+
+  result += escapeHtml(rawText.slice(lastIndex));
+  return result;
+}
+
+/**
+ * @param {string} destinationKey
+ * @param {"city" | "beach" | "nature" | "food"} templateType
+ * @returns {{morning: string[], afternoon: string[], evening: string[]} | null}
+ */
+function getDestinationPlaceSetForType(destinationKey, templateType) {
+  if (!destinationKey) {
+    return null;
+  }
+
+  var destinationData = DESTINATION_PLACE_SUGGESTIONS[destinationKey];
+  if (!destinationData || typeof destinationData !== "object") {
+    return null;
+  }
+
+  var placeSet = destinationData[templateType];
+  if (
+    !placeSet ||
+    !Array.isArray(placeSet.morning) ||
+    !Array.isArray(placeSet.afternoon) ||
+    !Array.isArray(placeSet.evening)
+  ) {
+    return null;
+  }
+
+  return placeSet;
+}
+
+/**
+ * @param {TripInput} input
+ * @returns {boolean}
+ */
+function hasKnownDestinationPlaceSupport(input) {
+  var destinationKey = normalizeDestinationKey(input && input.destination);
+  if (!destinationKey) {
+    return false;
+  }
+
+  var normalizedType = normalizeTripType(input && input.tripType);
+  if (normalizedType === "surprise") {
+    return BASE_TRIP_TYPES.some(function (baseType) {
+      return Boolean(getDestinationPlaceSetForType(destinationKey, baseType));
+    });
+  }
+
+  return Boolean(getDestinationPlaceSetForType(destinationKey, normalizedType));
+}
+
+/**
+ * @param {"city" | "beach" | "nature" | "food"} templateType
+ * @param {"morning" | "afternoon" | "evening"} slot
+ * @param {number} destinationSeed
+ * @param {number} dayIndex
+ * @param {string} destinationKey
+ * @returns {{place: string, isDestinationSpecific: boolean}}
+ */
+function pickPlaceSuggestion(templateType, slot, destinationSeed, dayIndex, destinationKey) {
+  var destinationPlaceSet = getDestinationPlaceSetForType(destinationKey, templateType);
+  var byType = destinationPlaceSet || PLACE_SUGGESTIONS_BY_TYPE[templateType] || PLACE_SUGGESTIONS_BY_TYPE.city;
+  var suggestions = byType[slot] || byType.morning;
+  var slotOffset = getSlotOffset(slot);
+  var index = (destinationSeed + dayIndex * 5 + slotOffset) % suggestions.length;
+  return {
+    place: suggestions[index],
+    isDestinationSpecific: Boolean(destinationPlaceSet)
+  };
+}
+
+/**
+ * @param {string} activityText
+ * @param {"morning" | "afternoon" | "evening"} slot
+ * @param {string} destination
+ * @param {string} placeSuggestion
+ * @param {number} destinationSeed
+ * @param {number} dayIndex
+ * @param {boolean} isDestinationSpecific
+ * @returns {string}
+ */
+function composeItineraryText(activityText, slot, destination, placeSuggestion, destinationSeed, dayIndex, isDestinationSpecific) {
+  var activity = trimSentence(activityText);
+  var place = trimSentence(placeSuggestion);
+  var formattedDestination = formatDestinationForDisplay(destination);
+  var variant = (destinationSeed + dayIndex * 7 + getSlotOffset(slot)) % 4;
+  var shouldUsePlace = !hasPlaceOverlap(activity, place);
+
+  if (shouldUsePlace && isDestinationSpecific) {
+    if (slot === "morning") {
+      if (variant === 0) {
+        return "Früher Start mit " + activity + " im Viertel rund um " + place + ".";
+      }
+      if (variant === 1) {
+        return "Für den Morgen passt " + activity + ", zum Beispiel bei " + place + ".";
+      }
+      if (variant === 2) {
+        return "Morgenidee: " + activity + " mit Stopp bei " + place + ".";
+      }
+      return activity + " mit Ortsfokus auf " + place + " in " + formattedDestination + ".";
+    }
+
+    if (slot === "afternoon") {
+      if (variant === 0) {
+        return "Am Nachmittag bietet sich " + activity + " an, etwa rund um " + place + ".";
+      }
+      if (variant === 1) {
+        return activity + " mit einem Abstecher nach " + place + ".";
+      }
+      if (variant === 2) {
+        return "Im Bereich " + place + " und anschließend " + activity + ".";
+      }
+      return "Für den Nachmittag passt " + activity + ", zum Beispiel nahe " + place + ".";
+    }
+
+    if (variant === 0) {
+      return "Am Abend passt " + activity + ", etwa im Umfeld von " + place + ".";
+    }
+    if (variant === 1) {
+      return activity + " mit Ausklang rund um " + place + ".";
+    }
+    if (variant === 2) {
+      return "Zum Tagesende eignet sich " + place + " für " + activity + ".";
+    }
+    return "Abendprogramm nahe " + place + ": " + activity + ".";
+  }
+
+  if (slot === "morning") {
+    if (!shouldUsePlace) {
+      if (variant === 0) {
+        return activity + " in " + formattedDestination + ".";
+      }
+      if (variant === 1) {
+        return "Am Morgen: " + activity + ".";
+      }
+      if (variant === 2) {
+        return "Für den Morgen passt " + activity + ".";
+      }
+      return "Morgenprogramm: " + activity + ".";
+    }
+
+    if (variant === 0) {
+      return activity + " im Bereich " + place + " in " + formattedDestination + ".";
+    }
+    if (variant === 1) {
+      return "Start in den Tag: " + activity + ", besonders rund um " + place + ".";
+    }
+    if (variant === 2) {
+      return "Für den Morgen passt " + activity + " mit Fokus auf " + place + ".";
+    }
+    return activity + " als entspannter Tagesstart nahe " + place + ".";
+  }
+
+  if (slot === "afternoon") {
+    if (!shouldUsePlace) {
+      if (variant === 0) {
+        return "Am Nachmittag bietet sich " + activity + " an.";
+      }
+      if (variant === 1) {
+        return activity + " als entspannte Einheit am Nachmittag.";
+      }
+      if (variant === 2) {
+        return "Für den Nachmittag eignet sich " + activity + ".";
+      }
+      return "Nachmittags: " + activity + ".";
+    }
+
+    if (variant === 0) {
+      return "Am Nachmittag bietet sich " + activity + " rund um " + place + " an.";
+    }
+    if (variant === 1) {
+      return activity + " mit Zeit für " + place + ".";
+    }
+    if (variant === 2) {
+      return "Für den Nachmittag eignet sich " + activity + " im Umfeld von " + place + ".";
+    }
+    return "Nachmittags: " + activity + ", ideal im Bereich " + place + ".";
+  }
+
+  if (!shouldUsePlace) {
+    if (variant === 0) {
+      return "Am Abend passt " + activity + ".";
+    }
+    if (variant === 1) {
+      return "Abendprogramm: " + activity + ".";
+    }
+    if (variant === 2) {
+      return "Zum Tagesende empfiehlt sich " + activity + ".";
+    }
+    return "Für den Abend eignet sich " + activity + ".";
+  }
+
+  if (variant === 0) {
+    return "Am Abend passt " + activity + " rund um " + place + ".";
+  }
+  if (variant === 1) {
+    return "Zum Abend passt " + activity + " im Umfeld von " + place + ".";
+  }
+  if (variant === 2) {
+    return "Zum Tagesende empfiehlt sich " + activity + " nahe " + place + ".";
+  }
+  return "Abends eignet sich " + place + " besonders gut für " + activity + ".";
+}
+
+/**
  * @param {TripInput} input
  * @param {number} dailyBudget
  * @returns {DayPlan[]}
  */
 function buildItinerary(input, dailyBudget) {
   var destinationSeed = hashString(input.destination.toLowerCase());
+  var destinationKey = normalizeDestinationKey(input.destination);
   var budgetPerDay = Number(dailyBudget.toFixed(2));
   var itinerary = [];
 
   for (var dayIndex = 0; dayIndex < input.days; dayIndex += 1) {
     var templateType = getTemplateTypeForDay(input, dayIndex);
     var templateSet = ACTIVITY_TEMPLATES_BY_TYPE[templateType] || ACTIVITY_TEMPLATES_BY_TYPE.city;
+    var morningActivity = pickTemplate("morning", templateSet, destinationSeed, dayIndex);
+    var afternoonActivity = pickTemplate("afternoon", templateSet, destinationSeed, dayIndex);
+    var eveningActivity = pickTemplate("evening", templateSet, destinationSeed, dayIndex);
+    var morningPlace = pickPlaceSuggestion(templateType, "morning", destinationSeed, dayIndex, destinationKey);
+    var afternoonPlace = pickPlaceSuggestion(templateType, "afternoon", destinationSeed, dayIndex, destinationKey);
+    var eveningPlace = pickPlaceSuggestion(templateType, "evening", destinationSeed, dayIndex, destinationKey);
 
     itinerary.push({
       day: dayIndex + 1,
-      morning: pickTemplate("morning", templateSet, destinationSeed, dayIndex),
-      afternoon: pickTemplate("afternoon", templateSet, destinationSeed, dayIndex),
-      evening: pickTemplate("evening", templateSet, destinationSeed, dayIndex),
+      morning: composeItineraryText(morningActivity, "morning", input.destination, morningPlace.place, destinationSeed, dayIndex, morningPlace.isDestinationSpecific),
+      afternoon: composeItineraryText(afternoonActivity, "afternoon", input.destination, afternoonPlace.place, destinationSeed, dayIndex, afternoonPlace.isDestinationSpecific),
+      evening: composeItineraryText(eveningActivity, "evening", input.destination, eveningPlace.place, destinationSeed, dayIndex, eveningPlace.isDestinationSpecific),
       estimatedCost: budgetPerDay
     });
   }
@@ -1717,6 +2460,13 @@ function renderPlan(plan, rootEl, formEl, options) {
   itineraryLead.textContent = "Dein Ablauf pro Tag mit klaren Slots für Morgen, Nachmittag und Abend.";
   itinerarySection.appendChild(itineraryLead);
 
+  if (hasKnownDestinationPlaceSupport(plan.input)) {
+    var itineraryNote = document.createElement("p");
+    itineraryNote.className = "itinerary-lead";
+    itineraryNote.textContent = "Flyra nutzt für dieses Ziel passendere Ortsvorschläge.";
+    itinerarySection.appendChild(itineraryNote);
+  }
+
   if (collabIndicatorText) {
     var collabIndicator = document.createElement("p");
     collabIndicator.className = "collab-indicator";
@@ -1742,8 +2492,10 @@ function renderPlan(plan, rootEl, formEl, options) {
     var slotList = document.createElement("ul");
     slotList.className = "day-slot-list";
     slotList.appendChild(createSlot({
+      slot: "morning",
       label: "Morgen",
       value: dayPlan.morning,
+      destination: plan.input.destination,
       editable: Boolean(onItineraryFieldInput),
       onInput: onItineraryFieldInput
         ? function handleMorningInput(nextValue, flushNow) {
@@ -1752,8 +2504,10 @@ function renderPlan(plan, rootEl, formEl, options) {
         : null
     }));
     slotList.appendChild(createSlot({
+      slot: "afternoon",
       label: "Nachmittag",
       value: dayPlan.afternoon,
+      destination: plan.input.destination,
       editable: Boolean(onItineraryFieldInput),
       onInput: onItineraryFieldInput
         ? function handleAfternoonInput(nextValue, flushNow) {
@@ -1762,8 +2516,10 @@ function renderPlan(plan, rootEl, formEl, options) {
         : null
     }));
     slotList.appendChild(createSlot({
+      slot: "evening",
       label: "Abend",
       value: dayPlan.evening,
+      destination: plan.input.destination,
       editable: Boolean(onItineraryFieldInput),
       onInput: onItineraryFieldInput
         ? function handleEveningInput(nextValue, flushNow) {
@@ -1797,12 +2553,14 @@ function renderPlan(plan, rootEl, formEl, options) {
 }
 
 /**
- * @param {{label: string, value: string, editable?: boolean, onInput?: ((value: string, flushNow: boolean) => void) | null}} options
+ * @param {{slot: "morning" | "afternoon" | "evening", label: string, value: string, destination: string, editable?: boolean, onInput?: ((value: string, flushNow: boolean) => void) | null}} options
  * @returns {HTMLLIElement}
  */
 function createSlot(options) {
+  var slot = options.slot;
   var label = options.label;
   var value = options.value;
+  var destination = options.destination;
   var editable = Boolean(options.editable);
   var onInput = typeof options.onInput === "function" ? options.onInput : null;
   var item = document.createElement("li");
@@ -1810,27 +2568,40 @@ function createSlot(options) {
 
   var labelEl = document.createElement("span");
   labelEl.className = "slot-label";
-  labelEl.textContent = label + ":";
+  labelEl.textContent = (SLOT_ICONS[slot] || "") + " " + label + ":";
 
-  var valueEl = document.createElement("textarea");
-  valueEl.className = "slot-text slot-input";
-  valueEl.rows = 2;
-  valueEl.value = String(value || "");
-  valueEl.readOnly = !editable;
-  valueEl.setAttribute("aria-label", label);
+  var valueWrap = document.createElement("div");
+  valueWrap.className = "slot-value-wrap";
 
-  if (editable && onInput) {
-    valueEl.addEventListener("input", function handleInput() {
-      onInput(valueEl.value, false);
-    });
+  var previewEl = document.createElement("p");
+  previewEl.className = "slot-text slot-text-rich";
+  previewEl.innerHTML = renderSlotTextWithPlaceLinks(value, destination, slot);
+  valueWrap.appendChild(previewEl);
 
-    valueEl.addEventListener("blur", function handleBlur() {
-      onInput(valueEl.value, true);
-    });
+  if (editable) {
+    var valueEl = document.createElement("textarea");
+    valueEl.className = "slot-text slot-input";
+    valueEl.rows = 2;
+    valueEl.value = String(value || "");
+    valueEl.readOnly = !editable;
+    valueEl.setAttribute("aria-label", label);
+    valueWrap.appendChild(valueEl);
+
+    if (onInput) {
+      valueEl.addEventListener("input", function handleInput() {
+        previewEl.innerHTML = renderSlotTextWithPlaceLinks(valueEl.value, destination, slot);
+        onInput(valueEl.value, false);
+      });
+
+      valueEl.addEventListener("blur", function handleBlur() {
+        previewEl.innerHTML = renderSlotTextWithPlaceLinks(valueEl.value, destination, slot);
+        onInput(valueEl.value, true);
+      });
+    }
   }
 
   item.appendChild(labelEl);
-  item.appendChild(valueEl);
+  item.appendChild(valueWrap);
   return item;
 }
 function createSummaryChip(label, value) {
@@ -1946,12 +2717,40 @@ function initializePlanner() {
   var realtimeChannel = null;
   var realtimeChannelTripId = "";
   var pendingPlanUpdateTimer = null;
+  var startupSavedPlan = loadSavedPlanFromLocalStorage();
+  var startupSavedPlanConsumed = false;
 
   function clearPendingPlanUpdateTimer() {
     if (pendingPlanUpdateTimer !== null) {
       clearTimeout(pendingPlanUpdateTimer);
       pendingPlanUpdateTimer = null;
     }
+  }
+
+  /**
+   * @param {TripPlan} plan
+   * @param {string | null | undefined} tripId
+   */
+  function savePlanSnapshotLocally(plan, tripId) {
+    savePlanToLocalStorage(plan, tripId);
+  }
+
+  /**
+   * @param {TripPlan} plan
+   * @param {string | null | undefined} tripId
+   * @param {boolean} allowOverlay
+   */
+  function tryApplyStartupSavedPlan(plan, tripId, allowOverlay) {
+    if (!allowOverlay || startupSavedPlanConsumed || !startupSavedPlan) {
+      return;
+    }
+
+    if (!doesSavedPlanMatch(plan, startupSavedPlan, tripId)) {
+      return;
+    }
+
+    applySavedPlanEdits(plan, startupSavedPlan);
+    startupSavedPlanConsumed = true;
   }
 
   function teardownTripRealtimeSubscription() {
@@ -2059,6 +2858,7 @@ function initializePlanner() {
     }
 
     dayPlan[slot] = normalizedValue;
+    savePlanSnapshotLocally(currentPlan, currentTripId);
     scheduleCurrentPlanUpdate(flushNow);
   }
 
@@ -2096,7 +2896,7 @@ function initializePlanner() {
       .subscribe();
   }
 
-  function applyLoadedTrip(loadedTrip, showUpdatedIndicator) {
+  function applyLoadedTrip(loadedTrip, showUpdatedIndicator, allowStartupOverlay) {
     if (!loadedTrip || !loadedTrip.plan || !loadedTrip.plan.input) {
       renderMissingTrip();
       return false;
@@ -2111,6 +2911,7 @@ function initializePlanner() {
     loadedTrip.plan.input = sanitizedInput;
     currentPlan = loadedTrip.plan;
     currentTripId = loadedTrip.id;
+    tryApplyStartupSavedPlan(currentPlan, currentTripId, Boolean(allowStartupOverlay));
     setFormValuesFromInput(sanitizedInput);
     updateDestinationTypeSuggestion(false);
     renderErrors([], errorBox);
@@ -2123,17 +2924,18 @@ function initializePlanner() {
     }
 
     ensureTripRealtimeSubscription(currentTripId);
+    savePlanSnapshotLocally(currentPlan, currentTripId);
     return true;
   }
 
-  function reloadPlanFromServer(showUpdatedIndicator) {
+  function reloadPlanFromServer(showUpdatedIndicator, allowStartupOverlay) {
     if (!currentTripId || !isUuid(currentTripId)) {
       return Promise.resolve();
     }
 
     var tripIdForLoad = currentTripId;
     return loadTripFromSupabase(tripIdForLoad).then(function (loadedTrip) {
-      applyLoadedTrip(loadedTrip, showUpdatedIndicator);
+      applyLoadedTrip(loadedTrip, showUpdatedIndicator, allowStartupOverlay);
     });
   }
 
@@ -2146,10 +2948,11 @@ function initializePlanner() {
     hideResult(resultBox, resetButton);
   }
 
-  function generatePlanFromInput(input, shouldSyncQuery) {
+  function generatePlanFromInput(input, shouldSyncQuery, allowStartupOverlay) {
     clearPendingPlanUpdateTimer();
     teardownTripRealtimeSubscription();
     var builtPlan = buildTripPlan(input);
+    tryApplyStartupSavedPlan(builtPlan, null, Boolean(allowStartupOverlay));
     currentPlan = builtPlan;
     currentTripId = null;
     renderErrors([], errorBox);
@@ -2163,6 +2966,7 @@ function initializePlanner() {
     if (resetButton) {
       resetButton.classList.remove("is-hidden");
     }
+    savePlanSnapshotLocally(currentPlan, currentTripId);
 
     if (
       shouldSyncQuery &&
@@ -2186,6 +2990,7 @@ function initializePlanner() {
         syncTripQueryInAddressBar(savedTripId);
         ensureTripRealtimeSubscription(savedTripId);
         persistCurrentPlanUpdate();
+        savePlanSnapshotLocally(currentPlan, currentTripId);
       }
     });
   }
@@ -2203,7 +3008,7 @@ function initializePlanner() {
       return;
     }
 
-    generatePlanFromInput(parsed, true);
+    generatePlanFromInput(parsed, true, false);
   }
 
   formEl.addEventListener("submit", function handleSubmit(event) {
@@ -2226,10 +3031,13 @@ function initializePlanner() {
       teardownTripRealtimeSubscription();
       currentPlan = null;
       currentTripId = null;
+      startupSavedPlan = null;
+      startupSavedPlanConsumed = false;
       formEl.reset();
       updateDestinationTypeSuggestion(false);
       renderErrors([], errorBox);
       hideResult(resultBox, resetButton);
+      clearSavedPlanFromLocalStorage();
       if (
         typeof window !== "undefined" &&
         window.history &&
@@ -2252,7 +3060,7 @@ function initializePlanner() {
   var tripIdFromUrl = getTripIdFromUrl();
   if (tripIdFromUrl) {
     currentTripId = tripIdFromUrl;
-    reloadPlanFromServer(false);
+    reloadPlanFromServer(false, true);
     return;
   }
 
@@ -2261,8 +3069,16 @@ function initializePlanner() {
   if (sharedInput) {
     console.log("Auto restore executed");
     setTimeout(function () {
-      generatePlanFromInput(sharedInput, false);
+      generatePlanFromInput(sharedInput, false, true);
     }, 0);
+    return;
+  }
+
+  if (startupSavedPlan) {
+    var savedInput = mapSavedPlanToInput(startupSavedPlan);
+    setFormValuesFromInput(savedInput);
+    updateDestinationTypeSuggestion(false);
+    generatePlanFromInput(savedInput, false, true);
   }
 }
 
@@ -2316,6 +3132,9 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeDestinationKey: normalizeDestinationKey,
     getSuggestedTripType: getSuggestedTripType,
     getTripIdFromUrl: getTripIdFromUrl,
+    loadSavedPlanFromLocalStorage: loadSavedPlanFromLocalStorage,
+    savePlanToLocalStorage: savePlanToLocalStorage,
+    clearSavedPlanFromLocalStorage: clearSavedPlanFromLocalStorage,
     saveTripToSupabase: saveTripToSupabase,
     updateTripPlanInSupabase: updateTripPlanInSupabase,
     loadTripFromSupabase: loadTripFromSupabase,

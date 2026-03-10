@@ -968,6 +968,27 @@ select:focus-visible {
   font-size: 0.93rem;
 }
 
+.slot-value-wrap {
+  min-width: 0;
+}
+
+.slot-text-rich {
+  margin: 0;
+  color: #d6e5e3;
+}
+
+.slot-place-link {
+  color: #9fe3da;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.slot-place-link:hover {
+  color: #c8f2ec;
+}
+
 .slot-input {
   width: 100%;
   min-height: 44px;
@@ -981,6 +1002,7 @@ select:focus-visible {
   margin: 0;
   resize: vertical;
   white-space: pre-wrap;
+  margin-top: 0.38rem;
 }
 
 .slot-input:focus {
