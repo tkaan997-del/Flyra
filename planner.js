@@ -38,6 +38,7 @@
  * @property {string} budgetStatusHint
  * @property {number | null} recommendedDays
  * @property {DayPlan[]} itinerary
+ * @property {{clientId?: string, updatedAt?: string} | undefined} [collabMeta]
  */
 
 var CATEGORY_KEYS = ["accommodation", "transport", "food", "activities", "buffer"];
@@ -357,6 +358,10 @@ var currencyFormatter = new Intl.NumberFormat("de-DE", {
   style: "currency",
   currency: "EUR"
 });
+var timeFormatter = new Intl.DateTimeFormat("de-DE", {
+  hour: "2-digit",
+  minute: "2-digit"
+});
 
 var MIN_DAILY_BUDGET = 25;
 var LOW_BUDGET_WARNING_MESSAGE = "Dein Budget ist für diese Reisedauer voraussichtlich zu niedrig.";
@@ -368,13 +373,87 @@ var PDF_EXPORT_SUCCESS_MESSAGE = "PDF wurde heruntergeladen.";
 var PDF_EXPORT_UNAVAILABLE_MESSAGE = "PDF-Export ist aktuell nicht verfügbar. Bitte lade die Seite neu.";
 var PDF_EXPORT_ERROR_MESSAGE = "PDF konnte nicht erstellt werden. Bitte versuche es erneut.";
 var PDF_EXPORT_NO_PLAN_MESSAGE = "Bitte generiere zuerst einen Reiseplan.";
-var COLLAB_PLAN_UPDATED_MESSAGE = "Plan wurde aktualisiert";
+var COLLAB_REMOTE_UPDATE_MESSAGE = "Plan wurde von einem anderen Gerät aktualisiert";
+var COLLAB_STATUS_RESTORE_DELAY_MS = 2800;
 var SHARE_ROUTE_PATH = "/plan";
 var SAVED_PLAN_STORAGE_KEY = "flyra_saved_plan";
+var COLLAB_TIME_PLACEHOLDER = "—";
+var COLLAB_STATUS_MESSAGES = {
+  "local-saved": "Plan lokal gespeichert",
+  syncing: "Änderungen werden synchronisiert ...",
+  synced: "Plan live synchronisiert",
+  inactive: "Live-Sync aktuell nicht aktiv",
+  "remote-update": COLLAB_REMOTE_UPDATE_MESSAGE
+};
 var SLOT_ICONS = {
   morning: "☕",
   afternoon: "📍",
   evening: "🍽"
+};
+var PLACE_LINK_HINT_TERMS = [
+  "museum",
+  "palast",
+  "park",
+  "bazaar",
+  "bazar",
+  "markt",
+  "restaurant",
+  "bar",
+  "cafe",
+  "café",
+  "ufer",
+  "promenade",
+  "turm",
+  "kirche",
+  "kathedrale",
+  "bäckerei",
+  "baeckerei",
+  "brasserie",
+  "viertel",
+  "garten",
+  "garden",
+  "hafen",
+  "beach club",
+  "food market",
+  "nationalpark",
+  "wasserfall"
+];
+var PLACE_LINK_STOPWORDS = {
+  am: true,
+  an: true,
+  auf: true,
+  aus: true,
+  bei: true,
+  der: true,
+  die: true,
+  das: true,
+  den: true,
+  des: true,
+  dem: true,
+  ein: true,
+  eine: true,
+  einem: true,
+  einer: true,
+  fuer: true,
+  für: true,
+  im: true,
+  in: true,
+  mit: true,
+  nach: true,
+  und: true,
+  von: true,
+  vom: true,
+  zum: true,
+  zur: true,
+  start: true,
+  morgen: true,
+  nachmittag: true,
+  abend: true,
+  morgenidee: true,
+  tagesende: true,
+  tagesstart: true,
+  abendprogramm: true,
+  morgenprogramm: true
 };
 var plannerInitializationDone = false;
 var currentPlan = null;
@@ -400,6 +479,165 @@ function clearElement(el) {
 
 function formatCurrency(value) {
   return currencyFormatter.format(value);
+}
+
+/**
+ * @param {string | null | undefined} state
+ * @returns {"local-saved" | "syncing" | "synced" | "inactive" | "remote-update"}
+ */
+function normalizeCollabStatusState(state) {
+  var normalized = String(state || "").trim().toLowerCase();
+  if (
+    normalized === "local-saved" ||
+    normalized === "syncing" ||
+    normalized === "synced" ||
+    normalized === "inactive" ||
+    normalized === "remote-update"
+  ) {
+    return /** @type {"local-saved" | "syncing" | "synced" | "inactive" | "remote-update"} */ (normalized);
+  }
+
+  return "inactive";
+}
+
+/**
+ * @param {Date | string | number | null | undefined} value
+ * @returns {Date | null}
+ */
+function parseDateLike(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : null;
+  }
+
+  var parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+/**
+ * @param {Date | string | number | null | undefined} value
+ * @returns {string}
+ */
+function formatCollabTimestamp(value) {
+  var parsed = parseDateLike(value);
+  if (!parsed) {
+    return COLLAB_TIME_PLACEHOLDER;
+  }
+
+  return timeFormatter.format(parsed);
+}
+
+/**
+ * @param {"local-saved" | "syncing" | "synced" | "inactive" | "remote-update"} state
+ * @param {string | null | undefined} customMessage
+ * @returns {string}
+ */
+function getCollabStatusText(state, customMessage) {
+  var custom = String(customMessage || "").trim();
+  if (custom) {
+    return custom;
+  }
+
+  return COLLAB_STATUS_MESSAGES[state] || COLLAB_STATUS_MESSAGES.inactive;
+}
+
+/**
+ * @param {Date | string | number | null | undefined} lastSavedAt
+ * @returns {string}
+ */
+function getCollabStatusTimeText(lastSavedAt) {
+  return "Zuletzt gespeichert: " + formatCollabTimestamp(lastSavedAt);
+}
+
+/**
+ * @param {HTMLElement} rootEl
+ * @param {"local-saved" | "syncing" | "synced" | "inactive" | "remote-update"} state
+ * @param {Date | string | number | null | undefined} lastSavedAt
+ * @param {string | null | undefined} customMessage
+ */
+function applyCollabStatusBarState(rootEl, state, lastSavedAt, customMessage) {
+  if (!rootEl) {
+    return;
+  }
+
+  var statusBar = rootEl.querySelector("[data-collab-status-bar]");
+  if (!statusBar) {
+    return;
+  }
+
+  statusBar.classList.remove(
+    "collab-status-bar--local-saved",
+    "collab-status-bar--syncing",
+    "collab-status-bar--synced",
+    "collab-status-bar--inactive",
+    "collab-status-bar--remote-update"
+  );
+  statusBar.classList.add("collab-status-bar--" + state);
+
+  var textEl = statusBar.querySelector("[data-collab-status-text]");
+  if (textEl) {
+    textEl.textContent = getCollabStatusText(state, customMessage);
+  }
+
+  var timeEl = statusBar.querySelector("[data-collab-status-time]");
+  if (timeEl) {
+    timeEl.textContent = getCollabStatusTimeText(lastSavedAt);
+  }
+}
+
+/**
+ * @param {"local-saved" | "syncing" | "synced" | "inactive" | "remote-update"} state
+ * @param {Date | string | number | null | undefined} lastSavedAt
+ * @param {string | null | undefined} customMessage
+ * @returns {HTMLDivElement}
+ */
+function createCollabStatusBar(state, lastSavedAt, customMessage) {
+  var wrapper = document.createElement("div");
+  wrapper.className = "collab-status-bar collab-status-bar--" + state;
+  wrapper.setAttribute("data-collab-status-bar", "true");
+  wrapper.setAttribute("aria-live", "polite");
+
+  var dot = document.createElement("span");
+  dot.className = "collab-status-dot";
+  dot.setAttribute("aria-hidden", "true");
+  wrapper.appendChild(dot);
+
+  var content = document.createElement("div");
+  content.className = "collab-status-content";
+
+  var textEl = document.createElement("p");
+  textEl.className = "collab-status-text";
+  textEl.setAttribute("data-collab-status-text", "true");
+  textEl.textContent = getCollabStatusText(state, customMessage);
+  content.appendChild(textEl);
+
+  var timeEl = document.createElement("p");
+  timeEl.className = "collab-status-time";
+  timeEl.setAttribute("data-collab-status-time", "true");
+  timeEl.textContent = getCollabStatusTimeText(lastSavedAt);
+  content.appendChild(timeEl);
+
+  wrapper.appendChild(content);
+  return wrapper;
+}
+
+/**
+ * @param {TripPlan | null | undefined} plan
+ * @returns {Date | null}
+ */
+function getPlanCollabUpdatedAt(plan) {
+  if (!plan || !plan.collabMeta || typeof plan.collabMeta !== "object") {
+    return null;
+  }
+
+  return parseDateLike(plan.collabMeta.updatedAt);
 }
 
 function getBudgetStatus(dailyBudget) {
@@ -1897,11 +2135,117 @@ function getKnownPlaceNamesForSlot(destination, slot) {
 }
 
 /**
+ * @param {string} candidate
+ * @returns {boolean}
+ */
+function shouldKeepHeuristicPlaceCandidate(candidate) {
+  var phrase = String(candidate || "").trim();
+  if (!phrase) {
+    return false;
+  }
+
+  var normalized = normalizePhraseKey(phrase);
+  if (!normalized) {
+    return false;
+  }
+
+  var words = normalized.split(" ").filter(Boolean);
+  var hasHintTerm = PLACE_LINK_HINT_TERMS.some(function (term) {
+    return normalized.indexOf(term) !== -1;
+  });
+
+  if (words.length === 1) {
+    if (PLACE_LINK_STOPWORDS[words[0]]) {
+      return false;
+    }
+
+    if (hasHintTerm) {
+      return true;
+    }
+
+    return phrase.length >= 6;
+  }
+
+  var capitalizedWords = phrase
+    .split(/\s+/)
+    .filter(function (word) {
+      return /^[A-ZÄÖÜ]/.test(word);
+    }).length;
+
+  if (hasHintTerm) {
+    return true;
+  }
+
+  return capitalizedWords >= 2;
+}
+
+/**
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractHeuristicPlaceNames(text) {
+  var rawText = String(text || "");
+  if (!rawText.trim()) {
+    return [];
+  }
+
+  var candidates = [];
+  var titleSequencePattern = /\b([A-ZÄÖÜ][A-Za-zÀ-ÖØ-öø-ÿ0-9'’\-]*(?:\s+(?:[A-ZÄÖÜ][A-Za-zÀ-ÖØ-öø-ÿ0-9'’\-]*|de|da|do|dos|das|del|di|du|la|le|el|von|van|der|den|des|am|im|in|an|auf|bei|zum|zur)){0,4})\b/g;
+  var sequenceMatch = titleSequencePattern.exec(rawText);
+
+  while (sequenceMatch) {
+    candidates.push(String(sequenceMatch[1] || "").trim());
+    sequenceMatch = titleSequencePattern.exec(rawText);
+  }
+
+  var landmarkPhrasePattern = /\b(?:im|in|am|an|bei|nahe|rund um|umfeld von|wie)\s+(?:dem|den|der|die|das|des|einem|einer|einen)?\s*([A-ZÄÖÜ][^,.;:()]{1,56})/gi;
+  var landmarkMatch = landmarkPhrasePattern.exec(rawText);
+
+  while (landmarkMatch) {
+    candidates.push(String(landmarkMatch[1] || "").trim());
+    landmarkMatch = landmarkPhrasePattern.exec(rawText);
+  }
+
+  var filtered = candidates.filter(shouldKeepHeuristicPlaceCandidate);
+  var unique = Array.from(new Set(filtered));
+  unique.sort(function (a, b) {
+    return b.length - a.length;
+  });
+  return unique;
+}
+
+/**
+ * @param {string[]} knownNames
+ * @param {string[]} heuristicNames
+ * @returns {string[]}
+ */
+function mergePlaceNameCandidates(knownNames, heuristicNames) {
+  var index = Object.create(null);
+  var merged = [];
+
+  function addName(name) {
+    var normalized = normalizePhraseKey(name);
+    if (!normalized || index[normalized]) {
+      return;
+    }
+    index[normalized] = true;
+    merged.push(name);
+  }
+
+  knownNames.forEach(addName);
+  heuristicNames.forEach(addName);
+  merged.sort(function (a, b) {
+    return b.length - a.length;
+  });
+  return merged;
+}
+
+/**
  * @param {string} placeName
  * @param {string} destination
  * @returns {string}
  */
-function buildMapsSearchUrl(placeName, destination) {
+function createGoogleMapsLink(placeName, destination) {
   var destinationLabel = formatDestinationForDisplay(destination);
   var query = String(placeName || "").trim() + " " + destinationLabel;
   return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(query.trim());
@@ -1910,12 +2254,27 @@ function buildMapsSearchUrl(placeName, destination) {
 /**
  * @param {string} text
  * @param {string} destination
- * @param {"morning" | "afternoon" | "evening"} slot
+ * @param {"morning" | "afternoon" | "evening" | undefined} slot
  * @returns {string}
  */
-function renderSlotTextWithPlaceLinks(text, destination, slot) {
+function wrapPlacesWithLinks(text, destination, slot) {
   var rawText = String(text || "");
-  var placeNames = getKnownPlaceNamesForSlot(destination, slot);
+  var knownPlaceNames = [];
+
+  if (slot === "morning" || slot === "afternoon" || slot === "evening") {
+    knownPlaceNames = getKnownPlaceNamesForSlot(destination, slot);
+  } else {
+    knownPlaceNames = mergePlaceNameCandidates(
+      getKnownPlaceNamesForSlot(destination, "morning"),
+      mergePlaceNameCandidates(
+        getKnownPlaceNamesForSlot(destination, "afternoon"),
+        getKnownPlaceNamesForSlot(destination, "evening")
+      )
+    );
+  }
+
+  var heuristicPlaceNames = extractHeuristicPlaceNames(rawText);
+  var placeNames = mergePlaceNameCandidates(knownPlaceNames, heuristicPlaceNames);
   if (!rawText || placeNames.length === 0) {
     return escapeHtml(rawText);
   }
@@ -1933,7 +2292,7 @@ function renderSlotTextWithPlaceLinks(text, destination, slot) {
 
     result += escapeHtml(rawText.slice(lastIndex, start));
     result +=
-      '<a class="slot-place-link" href="' + escapeHtml(buildMapsSearchUrl(matchedPlace, destination)) +
+      '<a class="slot-place-link place-link" href="' + escapeHtml(createGoogleMapsLink(matchedPlace, destination)) +
       '" target="_blank" rel="noopener noreferrer">' + escapeHtml(matchedPlace) + "</a>";
 
     lastIndex = end;
@@ -1942,6 +2301,25 @@ function renderSlotTextWithPlaceLinks(text, destination, slot) {
 
   result += escapeHtml(rawText.slice(lastIndex));
   return result;
+}
+
+/**
+ * @param {string} placeName
+ * @param {string} destination
+ * @returns {string}
+ */
+function buildMapsSearchUrl(placeName, destination) {
+  return createGoogleMapsLink(placeName, destination);
+}
+
+/**
+ * @param {string} text
+ * @param {string} destination
+ * @param {"morning" | "afternoon" | "evening"} slot
+ * @returns {string}
+ */
+function renderSlotTextWithPlaceLinks(text, destination, slot) {
+  return wrapPlacesWithLinks(text, destination, slot);
 }
 
 /**
@@ -2217,7 +2595,13 @@ function hideResult(rootEl, resetButton) {
  * @param {TripPlan} plan
  * @param {HTMLElement} rootEl
  * @param {HTMLFormElement | undefined} formEl
- * @param {{ onItineraryFieldInput?: ((dayIndex: number, slot: "morning" | "afternoon" | "evening", value: string, flushNow: boolean) => void), collabIndicatorText?: string } | undefined} options
+ * @param {{
+ *   onItineraryFieldInput?: ((dayIndex: number, slot: "morning" | "afternoon" | "evening", value: string, flushNow: boolean) => void),
+ *   collabIndicatorText?: string,
+ *   collabStatusState?: "local-saved" | "syncing" | "synced" | "inactive" | "remote-update",
+ *   collabStatusMessage?: string,
+ *   collabLastSavedAt?: Date | string | number | null
+ * } | undefined} options
  */
 function renderPlan(plan, rootEl, formEl, options) {
   var normalizedOptions = options || {};
@@ -2225,7 +2609,14 @@ function renderPlan(plan, rootEl, formEl, options) {
     typeof normalizedOptions.onItineraryFieldInput === "function"
       ? normalizedOptions.onItineraryFieldInput
       : null;
+  var collabStatusState = normalizeCollabStatusState(normalizedOptions.collabStatusState || "inactive");
+  var collabStatusMessage = String(normalizedOptions.collabStatusMessage || "").trim();
   var collabIndicatorText = String(normalizedOptions.collabIndicatorText || "").trim();
+  if (!collabStatusMessage && collabIndicatorText) {
+    collabStatusMessage = collabIndicatorText;
+    collabStatusState = "remote-update";
+  }
+  var collabLastSavedAt = normalizedOptions.collabLastSavedAt || null;
 
   clearElement(rootEl);
   rootEl.classList.remove("is-hidden");
@@ -2467,12 +2858,7 @@ function renderPlan(plan, rootEl, formEl, options) {
     itinerarySection.appendChild(itineraryNote);
   }
 
-  if (collabIndicatorText) {
-    var collabIndicator = document.createElement("p");
-    collabIndicator.className = "collab-indicator";
-    collabIndicator.textContent = collabIndicatorText;
-    itinerarySection.appendChild(collabIndicator);
-  }
+  itinerarySection.appendChild(createCollabStatusBar(collabStatusState, collabLastSavedAt, collabStatusMessage));
 
   var itineraryGrid = document.createElement("div");
   itineraryGrid.className = "itinerary-grid";
@@ -2575,7 +2961,7 @@ function createSlot(options) {
 
   var previewEl = document.createElement("p");
   previewEl.className = "slot-text slot-text-rich";
-  previewEl.innerHTML = renderSlotTextWithPlaceLinks(value, destination, slot);
+  previewEl.innerHTML = wrapPlacesWithLinks(value, destination, slot);
   valueWrap.appendChild(previewEl);
 
   if (editable) {
@@ -2589,12 +2975,12 @@ function createSlot(options) {
 
     if (onInput) {
       valueEl.addEventListener("input", function handleInput() {
-        previewEl.innerHTML = renderSlotTextWithPlaceLinks(valueEl.value, destination, slot);
+        previewEl.innerHTML = wrapPlacesWithLinks(valueEl.value, destination, slot);
         onInput(valueEl.value, false);
       });
 
       valueEl.addEventListener("blur", function handleBlur() {
-        previewEl.innerHTML = renderSlotTextWithPlaceLinks(valueEl.value, destination, slot);
+        previewEl.innerHTML = wrapPlacesWithLinks(valueEl.value, destination, slot);
         onInput(valueEl.value, true);
       });
     }
@@ -2719,6 +3105,65 @@ function initializePlanner() {
   var pendingPlanUpdateTimer = null;
   var startupSavedPlan = loadSavedPlanFromLocalStorage();
   var startupSavedPlanConsumed = false;
+  var latestPlanUpdateRequest = 0;
+  var collabStatusResetTimer = null;
+  var collabStatusState = "inactive";
+  var collabStatusMessage = "";
+  var collabLastSavedAt = null;
+
+  function clearCollabStatusResetTimer() {
+    if (collabStatusResetTimer !== null) {
+      clearTimeout(collabStatusResetTimer);
+      collabStatusResetTimer = null;
+    }
+  }
+
+  function isLiveSyncAvailable() {
+    return Boolean(getSupabaseClient());
+  }
+
+  /**
+   * @param {"local-saved" | "syncing" | "synced" | "inactive" | "remote-update"} state
+   * @param {string | null | undefined} customMessage
+   * @param {Date | string | number | boolean | null | undefined} savedAt
+   */
+  function setCollabStatus(state, customMessage, savedAt) {
+    collabStatusState = normalizeCollabStatusState(state);
+    collabStatusMessage = String(customMessage || "").trim();
+
+    if (savedAt === true) {
+      collabLastSavedAt = new Date();
+    } else if (savedAt) {
+      var parsedTime = parseDateLike(savedAt);
+      if (parsedTime) {
+        collabLastSavedAt = parsedTime;
+      }
+    }
+
+    applyCollabStatusBarState(resultBox, collabStatusState, collabLastSavedAt, collabStatusMessage);
+  }
+
+  function setCollabStatusForCurrentEnvironment() {
+    if (!isLiveSyncAvailable()) {
+      setCollabStatus("inactive");
+      return;
+    }
+
+    if (currentTripId && isUuid(currentTripId)) {
+      setCollabStatus("synced");
+      return;
+    }
+
+    setCollabStatus("local-saved");
+  }
+
+  function scheduleCollabStatusRestore() {
+    clearCollabStatusResetTimer();
+    collabStatusResetTimer = setTimeout(function restoreCollabStatus() {
+      collabStatusResetTimer = null;
+      setCollabStatusForCurrentEnvironment();
+    }, COLLAB_STATUS_RESTORE_DELAY_MS);
+  }
 
   function clearPendingPlanUpdateTimer() {
     if (pendingPlanUpdateTimer !== null) {
@@ -2814,12 +3259,38 @@ function initializePlanner() {
 
   function persistCurrentPlanUpdate() {
     if (!currentTripId || !isUuid(currentTripId) || !currentPlan || !currentPlan.input) {
-      return;
+      return Promise.resolve(false);
+    }
+
+    if (!isLiveSyncAvailable()) {
+      setCollabStatus("inactive");
+      return Promise.resolve(false);
     }
 
     var tripIdForUpdate = currentTripId;
     var planSnapshot = currentPlan;
-    updateTripPlanInSupabase(tripIdForUpdate, planSnapshot, COLLAB_CLIENT_ID);
+    latestPlanUpdateRequest += 1;
+    var updateRequestId = latestPlanUpdateRequest;
+    setCollabStatus("syncing");
+
+    return updateTripPlanInSupabase(tripIdForUpdate, planSnapshot, COLLAB_CLIENT_ID).then(function (wasSaved) {
+      if (updateRequestId !== latestPlanUpdateRequest) {
+        return wasSaved;
+      }
+
+      if (wasSaved) {
+        setCollabStatus("synced", "", true);
+        return true;
+      }
+
+      if (!isLiveSyncAvailable()) {
+        setCollabStatus("inactive");
+        return false;
+      }
+
+      setCollabStatus("local-saved");
+      return false;
+    });
   }
 
   function scheduleCurrentPlanUpdate(flushNow) {
@@ -2857,8 +3328,16 @@ function initializePlanner() {
       return;
     }
 
+    clearCollabStatusResetTimer();
+    setCollabStatus("syncing");
     dayPlan[slot] = normalizedValue;
     savePlanSnapshotLocally(currentPlan, currentTripId);
+    setCollabStatus("local-saved", "", true);
+    if (!isLiveSyncAvailable()) {
+      scheduleCollabStatusRestore();
+      return;
+    }
+
     scheduleCurrentPlanUpdate(flushNow);
   }
 
@@ -2875,6 +3354,7 @@ function initializePlanner() {
     teardownTripRealtimeSubscription();
     var client = getSupabaseClient();
     if (!client || typeof client.channel !== "function") {
+      setCollabStatus("inactive");
       return;
     }
 
@@ -2911,13 +3391,19 @@ function initializePlanner() {
     loadedTrip.plan.input = sanitizedInput;
     currentPlan = loadedTrip.plan;
     currentTripId = loadedTrip.id;
+    var loadedPlanUpdatedAt = getPlanCollabUpdatedAt(loadedTrip.plan);
+    if (loadedPlanUpdatedAt) {
+      collabLastSavedAt = loadedPlanUpdatedAt;
+    }
     tryApplyStartupSavedPlan(currentPlan, currentTripId, Boolean(allowStartupOverlay));
     setFormValuesFromInput(sanitizedInput);
     updateDestinationTypeSuggestion(false);
     renderErrors([], errorBox);
     renderPlan(loadedTrip.plan, resultBox, formEl, {
       onItineraryFieldInput: handleItineraryFieldInput,
-      collabIndicatorText: showUpdatedIndicator ? COLLAB_PLAN_UPDATED_MESSAGE : ""
+      collabStatusState: collabStatusState,
+      collabStatusMessage: collabStatusMessage,
+      collabLastSavedAt: collabLastSavedAt
     });
     if (resetButton) {
       resetButton.classList.remove("is-hidden");
@@ -2925,6 +3411,16 @@ function initializePlanner() {
 
     ensureTripRealtimeSubscription(currentTripId);
     savePlanSnapshotLocally(currentPlan, currentTripId);
+
+    if (showUpdatedIndicator) {
+      setCollabStatus("remote-update", COLLAB_REMOTE_UPDATE_MESSAGE, loadedPlanUpdatedAt || true);
+      scheduleCollabStatusRestore();
+    } else if (!isLiveSyncAvailable()) {
+      setCollabStatus("inactive", "", loadedPlanUpdatedAt || false);
+    } else {
+      setCollabStatus("synced", "", loadedPlanUpdatedAt || false);
+    }
+
     return true;
   }
 
@@ -2941,32 +3437,48 @@ function initializePlanner() {
 
   function renderMissingTrip() {
     clearPendingPlanUpdateTimer();
+    clearCollabStatusResetTimer();
     teardownTripRealtimeSubscription();
     currentPlan = null;
     currentTripId = null;
+    collabLastSavedAt = null;
+    collabStatusState = "inactive";
+    collabStatusMessage = "";
     renderErrors(["Reiseplan nicht gefunden"], errorBox);
     hideResult(resultBox, resetButton);
   }
 
   function generatePlanFromInput(input, shouldSyncQuery, allowStartupOverlay) {
     clearPendingPlanUpdateTimer();
+    clearCollabStatusResetTimer();
     teardownTripRealtimeSubscription();
     var builtPlan = buildTripPlan(input);
     tryApplyStartupSavedPlan(builtPlan, null, Boolean(allowStartupOverlay));
     currentPlan = builtPlan;
     currentTripId = null;
+    if (!collabLastSavedAt) {
+      collabLastSavedAt = new Date();
+    }
+    setCollabStatusForCurrentEnvironment();
     renderErrors([], errorBox);
     if (shouldSyncQuery) {
       syncShareQueryInAddressBar(input);
     }
     renderPlan(builtPlan, resultBox, formEl, {
       onItineraryFieldInput: handleItineraryFieldInput,
-      collabIndicatorText: ""
+      collabStatusState: collabStatusState,
+      collabStatusMessage: collabStatusMessage,
+      collabLastSavedAt: collabLastSavedAt
     });
     if (resetButton) {
       resetButton.classList.remove("is-hidden");
     }
     savePlanSnapshotLocally(currentPlan, currentTripId);
+    setCollabStatus("local-saved", "", true);
+    var liveSyncAvailable = isLiveSyncAvailable();
+    if (!liveSyncAvailable) {
+      scheduleCollabStatusRestore();
+    }
 
     if (
       shouldSyncQuery &&
@@ -2979,8 +3491,14 @@ function initializePlanner() {
       }, 140);
     }
 
+    if (!liveSyncAvailable) {
+      return;
+    }
+
     latestSaveRequest += 1;
     var saveRequestId = latestSaveRequest;
+    setCollabStatus("syncing");
+
     saveTripToSupabase(builtPlan, COLLAB_CLIENT_ID).then(function (savedTripId) {
       if (saveRequestId !== latestSaveRequest) {
         return;
@@ -2991,6 +3509,13 @@ function initializePlanner() {
         ensureTripRealtimeSubscription(savedTripId);
         persistCurrentPlanUpdate();
         savePlanSnapshotLocally(currentPlan, currentTripId);
+        return;
+      }
+
+      if (!isLiveSyncAvailable()) {
+        setCollabStatus("inactive");
+      } else {
+        setCollabStatus("local-saved");
       }
     });
   }
@@ -3000,9 +3525,13 @@ function initializePlanner() {
 
     if (Array.isArray(parsed)) {
       clearPendingPlanUpdateTimer();
+      clearCollabStatusResetTimer();
       teardownTripRealtimeSubscription();
       currentPlan = null;
       currentTripId = null;
+      collabStatusState = "inactive";
+      collabStatusMessage = "";
+      collabLastSavedAt = null;
       renderErrors(parsed, errorBox);
       hideResult(resultBox, resetButton);
       return;
@@ -3028,11 +3557,15 @@ function initializePlanner() {
   if (resetButton) {
     resetButton.addEventListener("click", function handleReset() {
       clearPendingPlanUpdateTimer();
+      clearCollabStatusResetTimer();
       teardownTripRealtimeSubscription();
       currentPlan = null;
       currentTripId = null;
       startupSavedPlan = null;
       startupSavedPlanConsumed = false;
+      collabStatusState = "inactive";
+      collabStatusMessage = "";
+      collabLastSavedAt = null;
       formEl.reset();
       updateDestinationTypeSuggestion(false);
       renderErrors([], errorBox);
