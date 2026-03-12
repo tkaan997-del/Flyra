@@ -399,16 +399,16 @@ var PDF_EXPORT_SUCCESS_MESSAGE = "PDF wurde heruntergeladen.";
 var PDF_EXPORT_UNAVAILABLE_MESSAGE = "PDF-Export ist aktuell nicht verfügbar. Bitte lade die Seite neu.";
 var PDF_EXPORT_ERROR_MESSAGE = "PDF konnte nicht erstellt werden. Bitte versuche es erneut.";
 var PDF_EXPORT_NO_PLAN_MESSAGE = "Bitte generiere zuerst einen Reiseplan.";
-var COLLAB_REMOTE_UPDATE_MESSAGE = "Plan wurde von einem anderen Gerät aktualisiert";
+var COLLAB_REMOTE_UPDATE_MESSAGE = "Plan wurde aktualisiert";
 var COLLAB_STATUS_RESTORE_DELAY_MS = 2800;
 var SHARE_ROUTE_PATH = "/plan";
 var SAVED_PLAN_STORAGE_KEY = "flyra_saved_plan";
 var COLLAB_TIME_PLACEHOLDER = "—";
 var COLLAB_STATUS_MESSAGES = {
-  "local-saved": "Plan lokal gespeichert",
-  syncing: "Änderungen werden synchronisiert ...",
-  synced: "Plan live synchronisiert",
-  inactive: "Live-Sync aktuell nicht aktiv",
+  "local-saved": "?nderungen lokal gespeichert",
+  syncing: "Synchronisiere ?nderungen ...",
+  synced: "Live synchronisiert",
+  inactive: "Offline Modus",
   "remote-update": COLLAB_REMOTE_UPDATE_MESSAGE
 };
 var SLOT_ICONS = {
@@ -3669,6 +3669,7 @@ function renderPlan(plan, rootEl, formEl, options) {
     var slotList = document.createElement("ul");
     slotList.className = "day-slot-list";
     slotList.appendChild(createSlot({
+      dayIndex: itineraryIndex,
       slot: "morning",
       label: "Morgen",
       value: dayPlan.morning,
@@ -3682,6 +3683,7 @@ function renderPlan(plan, rootEl, formEl, options) {
         : null
     }));
     slotList.appendChild(createSlot({
+      dayIndex: itineraryIndex,
       slot: "afternoon",
       label: "Nachmittag",
       value: dayPlan.afternoon,
@@ -3695,6 +3697,7 @@ function renderPlan(plan, rootEl, formEl, options) {
         : null
     }));
     slotList.appendChild(createSlot({
+      dayIndex: itineraryIndex,
       slot: "evening",
       label: "Abend",
       value: dayPlan.evening,
@@ -3846,79 +3849,65 @@ function createDayActions(dayIndex, dayCount, onMoveDay) {
 }
 
 /**
- * @param {{slot: "morning" | "afternoon" | "evening", label: string, value: string, cost?: number, destination: string, editable?: boolean, onInput?: ((value: string, flushNow: boolean) => number | null | undefined) | null}} options
+ * @param {{dayIndex?: number, slot: "morning" | "afternoon" | "evening", label: string, value: string, cost?: number, destination: string, editable?: boolean, onInput?: ((value: string, flushNow: boolean) => number | null | undefined) | null}} options
  * @returns {HTMLLIElement}
  */
 function createSlot(options) {
+  var dayIndex = Number.isInteger(Number(options.dayIndex)) ? Number(options.dayIndex) : -1;
   var slot = options.slot;
   var label = options.label;
   var value = options.value;
   var cost = Number.isFinite(Number(options.cost)) ? Number(options.cost) : 0;
   var destination = options.destination;
   var editable = Boolean(options.editable);
-  var onInput = typeof options.onInput === "function" ? options.onInput : null;
   var item = document.createElement("li");
   item.className = "day-slot";
 
-  var labelEl = document.createElement("span");
+  var fieldId = "activity-" + String(dayIndex) + "-" + slot;
+  var fieldKey = String(dayIndex) + "-" + slot;
+
+  var labelEl = document.createElement("label");
   labelEl.className = "slot-label activity-label";
   labelEl.textContent = (SLOT_ICONS[slot] || "") + " " + label + ":";
+  labelEl.setAttribute("for", fieldId);
 
   var valueWrap = document.createElement("div");
   valueWrap.className = "slot-value-wrap";
-
-  var previewEl = document.createElement("p");
-  previewEl.className = "slot-text slot-text-rich";
-  previewEl.innerHTML = wrapPlacesWithLinks(value, destination, slot);
-  valueWrap.appendChild(previewEl);
 
   var costEl = document.createElement("p");
   costEl.className = "activity-cost";
   var costValueEl = document.createElement("span");
   costValueEl.className = "activity-cost-value";
+  costValueEl.setAttribute("data-slot-cost", fieldKey);
   costValueEl.textContent = formatApproxEuro(cost);
   costEl.appendChild(costValueEl);
 
   if (editable) {
-    var valueEl = document.createElement("textarea");
+    var valueEl = document.createElement("input");
+    valueEl.type = "text";
+    valueEl.id = fieldId;
     valueEl.className = "slot-text slot-input activity-input";
-    valueEl.rows = 2;
     valueEl.value = String(value || "");
     valueEl.readOnly = !editable;
     valueEl.setAttribute("aria-label", label);
+    valueEl.setAttribute("data-day-index", String(dayIndex));
+    valueEl.setAttribute("data-slot", slot);
+    valueEl.setAttribute("data-activity-key", fieldKey);
+    valueEl.setAttribute("data-destination", String(destination || ""));
+    valueEl.setAttribute("autocomplete", "off");
+    valueEl.setAttribute("spellcheck", "false");
     valueWrap.appendChild(valueEl);
 
-    var editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "activity-edit";
-    editButton.textContent = "Neue Aktivität";
-    editButton.setAttribute("aria-label", label + " bearbeiten");
-    valueWrap.appendChild(editButton);
-
-    editButton.addEventListener("click", function handleEditButtonClick() {
-      valueEl.focus();
-      if (typeof valueEl.select === "function") {
-        valueEl.select();
-      }
-    });
-
-    if (onInput) {
-      valueEl.addEventListener("input", function handleInput() {
-        previewEl.innerHTML = wrapPlacesWithLinks(valueEl.value, destination, slot);
-        var nextCost = onInput(valueEl.value, false);
-        if (Number.isFinite(Number(nextCost))) {
-          costValueEl.textContent = formatApproxEuro(Number(nextCost));
-        }
-      });
-
-      valueEl.addEventListener("blur", function handleBlur() {
-        previewEl.innerHTML = wrapPlacesWithLinks(valueEl.value, destination, slot);
-        var nextCost = onInput(valueEl.value, true);
-        if (Number.isFinite(Number(nextCost))) {
-          costValueEl.textContent = formatApproxEuro(Number(nextCost));
-        }
-      });
-    }
+    var previewEl = document.createElement("p");
+    previewEl.className = "slot-text slot-text-rich";
+    previewEl.setAttribute("data-slot-preview", fieldKey);
+    previewEl.innerHTML = wrapPlacesWithLinks(value, destination, slot);
+    valueWrap.appendChild(previewEl);
+  } else {
+    var readonlyValueEl = document.createElement("p");
+    readonlyValueEl.className = "slot-text slot-text-rich";
+    readonlyValueEl.innerHTML = wrapPlacesWithLinks(value, destination, slot);
+    valueWrap.appendChild(readonlyValueEl);
   }
 
   valueWrap.appendChild(costEl);
@@ -3928,10 +3917,6 @@ function createSlot(options) {
   return item;
 }
 
-/**
- * @param {{label: string, value: string, editable?: boolean, onInput?: ((value: string, flushNow: boolean) => void) | null}} options
- * @returns {HTMLDivElement}
- */
 function createDayNotes(options) {
   var value = String(options.value || "");
   var editable = Boolean(options.editable);
@@ -4294,6 +4279,7 @@ function initializePlanner() {
     }
 
     clearPendingPlanUpdateTimer();
+    setCollabStatus("syncing");
     pendingPlanUpdateTimer = setTimeout(function handlePlanUpdateTimeout() {
       pendingPlanUpdateTimer = null;
       persistCurrentPlanUpdate();
@@ -4357,8 +4343,8 @@ function initializePlanner() {
     }
 
     savePlanSnapshotLocally(currentPlan, currentTripId);
-    setCollabStatus("local-saved", "", true);
     if (!isLiveSyncAvailable()) {
+      setCollabStatus("local-saved", "", true);
       scheduleCollabStatusRestore();
       if (slot === "morning" || slot === "afternoon" || slot === "evening") {
         return Number(dayPlan[slot + "Cost"] || 0);
@@ -4373,6 +4359,60 @@ function initializePlanner() {
     return null;
   }
 
+  function getEditableActivityInputMeta(target) {
+    if (!target || !target.classList || !target.classList.contains("activity-input")) {
+      return null;
+    }
+    if (!resultBox.contains(target)) {
+      return null;
+    }
+    var slot = String(target.getAttribute("data-slot") || "").trim();
+    if (slot !== "morning" && slot !== "afternoon" && slot !== "evening") {
+      return null;
+    }
+    var dayIndex = Number(target.getAttribute("data-day-index"));
+    if (!Number.isInteger(dayIndex) || dayIndex < 0) {
+      return null;
+    }
+    return {
+      inputEl: target,
+      dayIndex: dayIndex,
+      slot: slot,
+      key: String(target.getAttribute("data-activity-key") || dayIndex + "-" + slot),
+      destination: String(target.getAttribute("data-destination") || "")
+    };
+  }
+  function refreshEditableActivityUi(meta, nextCost) {
+    if (!meta || !meta.inputEl) {
+      return;
+    }
+    var previewEl = resultBox.querySelector('[data-slot-preview="' + meta.key + '"]');
+    if (previewEl) {
+      previewEl.innerHTML = wrapPlacesWithLinks(meta.inputEl.value, meta.destination, meta.slot);
+    }
+    if (Number.isFinite(Number(nextCost))) {
+      var costValueEl = resultBox.querySelector('[data-slot-cost="' + meta.key + '"]');
+      if (costValueEl) {
+        costValueEl.textContent = formatApproxEuro(Number(nextCost));
+      }
+    }
+  }
+  function handleDelegatedActivityInput(event) {
+    var meta = getEditableActivityInputMeta(event.target);
+    if (!meta) {
+      return;
+    }
+    var nextCost = handleItineraryFieldInput(meta.dayIndex, meta.slot, meta.inputEl.value, false);
+    refreshEditableActivityUi(meta, nextCost);
+  }
+  function handleDelegatedActivityCommit(event) {
+    var meta = getEditableActivityInputMeta(event.target);
+    if (!meta) {
+      return;
+    }
+    var nextCost = handleItineraryFieldInput(meta.dayIndex, meta.slot, meta.inputEl.value, true);
+    refreshEditableActivityUi(meta, nextCost);
+  }
   function handleMoveDay(dayIndex, direction) {
     if (!currentPlan || !Array.isArray(currentPlan.itinerary)) {
       return;
@@ -4409,9 +4449,9 @@ function initializePlanner() {
     });
 
     savePlanSnapshotLocally(currentPlan, currentTripId);
-    setCollabStatus("local-saved", "", true);
 
     if (!isLiveSyncAvailable()) {
+      setCollabStatus("local-saved", "", true);
       scheduleCollabStatusRestore();
       return;
     }
@@ -4451,7 +4491,16 @@ function initializePlanner() {
           reloadPlanFromServer(true);
         }
       )
-      .subscribe();
+      .subscribe(function handleRealtimeStatus(status) {
+        if (status === "SUBSCRIBED") {
+          setCollabStatus("synced");
+          return;
+        }
+
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          setCollabStatus("inactive");
+        }
+      });
   }
 
   function applyLoadedTrip(loadedTrip, showUpdatedIndicator, allowStartupOverlay) {
@@ -4624,6 +4673,8 @@ function initializePlanner() {
     event.preventDefault();
     generatePlanFromForm();
   });
+  document.addEventListener("input", handleDelegatedActivityInput);
+  document.addEventListener("focusout", handleDelegatedActivityCommit, true);
 
   if (destinationInput) {
     destinationInput.addEventListener("input", function handleDestinationInput() {
@@ -4763,4 +4814,5 @@ if (typeof module !== "undefined" && module.exports) {
     buildTripPlan: buildTripPlan
   };
 }
+
 
