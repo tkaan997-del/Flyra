@@ -41,17 +41,40 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  const request = event.request;
+
+  if (!request || request.method !== "GET") {
+    return;
+  }
+
+  const requestUrl = new URL(request.url);
+  const isHttpRequest = requestUrl.protocol === "http:" || requestUrl.protocol === "https:";
+  const isSameOriginRequest = requestUrl.origin === self.location.origin;
+
+  if (!isHttpRequest || !isSameOriginRequest) {
+    return;
+  }
+
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        const responseClone = response.clone();
+    caches.match(request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
 
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseClone);
+      return fetch(request)
+        .then((networkResponse) => {
+          if (!networkResponse || networkResponse.status !== 200) {
+            return networkResponse;
+          }
+
+          const responseClone = networkResponse.clone();
+          return caches.open(CACHE_NAME).then((cache) => {
+            return cache.put(request, responseClone).then(() => networkResponse);
+          });
+        })
+        .catch(() => {
+          return caches.match("/index.html");
         });
-
-        return response;
-      })
-      .catch(() => caches.match(event.request))
+    })
   );
 });

@@ -403,6 +403,9 @@ var COLLAB_REMOTE_UPDATE_MESSAGE = "Plan wurde aktualisiert";
 var COLLAB_STATUS_RESTORE_DELAY_MS = 2800;
 var SHARE_ROUTE_PATH = "/plan";
 var SAVED_PLAN_STORAGE_KEY = "flyra_saved_plan";
+var MY_TRIPS_STORAGE_KEY = "flyra_trips";
+var LEGACY_MY_TRIPS_STORAGE_KEY = "flyra_my_trips_v1";
+var MY_TRIPS_LIMIT = 10;
 var COLLAB_TIME_PLACEHOLDER = "—";
 var COLLAB_STATUS_MESSAGES = {
   "local-saved": "?nderungen lokal gespeichert",
@@ -547,6 +550,16 @@ function clearElement(el) {
 
 function formatCurrency(value) {
   return currencyFormatter.format(value);
+}
+
+function getCostPerPerson(totalBudget, memberCount) {
+  var safeBudget = Number.isFinite(Number(totalBudget)) ? Math.max(0, Number(totalBudget)) : 0;
+  var safeMembers = Number.isInteger(Number(memberCount)) ? Number(memberCount) : 0;
+  if (safeMembers <= 1) {
+    return null;
+  }
+
+  return Number((safeBudget / safeMembers).toFixed(2));
 }
 
 function formatApproxEuro(value) {
@@ -1181,6 +1194,23 @@ function getBrowserLocalStorage() {
 }
 
 /**
+ * @param {string | null | undefined} raw
+ * @param {string} _scopeLabel
+ * @returns {any}
+ */
+function parseJsonSafely(raw, _scopeLabel) {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
  * @param {TripPlan} plan
  * @param {string | null | undefined} tripId
  * @returns {any}
@@ -1246,7 +1276,7 @@ function savePlanToLocalStorage(plan, tripId) {
   try {
     storage.setItem(SAVED_PLAN_STORAGE_KEY, JSON.stringify(payload));
   } catch (error) {
-    console.warn("[Flyra LocalSave] Speichern in localStorage fehlgeschlagen.", error);
+    return;
   }
 }
 
@@ -1259,7 +1289,7 @@ function clearSavedPlanFromLocalStorage() {
   try {
     storage.removeItem(SAVED_PLAN_STORAGE_KEY);
   } catch (error) {
-    console.warn("[Flyra LocalSave] Löschen aus localStorage fehlgeschlagen.", error);
+    return;
   }
 }
 
@@ -1299,47 +1329,40 @@ function sanitizeSavedDailyPlan(source) {
 /**
  * @returns {{destination: string, tripTitle: string, groupName: string, members: TripMember[], days: number, budget: number, tripType: "city" | "beach" | "nature" | "food" | "surprise", travelType: string, tripId: string | null, dailyPlan: {morning: string, morningCost?: number, afternoon: string, afternoonCost?: number, evening: string, eveningCost?: number, estimatedCost?: number, notes: string}[]} | null}
  */
-function loadSavedPlanFromLocalStorage() {
-  var storage = getBrowserLocalStorage();
-  if (!storage) {
-    return null;
-  }
+function createSavedTripId() {
+  return "trip_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+}
 
-  var raw = null;
-  try {
-    raw = storage.getItem(SAVED_PLAN_STORAGE_KEY);
-  } catch (error) {
-    console.warn("[Flyra LocalSave] Lesen aus localStorage fehlgeschlagen.", error);
-    return null;
-  }
+function buildFallbackSavedTripId(destination, createdAtDate, days, budget, tripType) {
+  return [
+    "trip",
+    String(createdAtDate.getTime()),
+    normalizeDestinationKey(destination) || "plan",
+    String(days),
+    String(toCents(budget)),
+    normalizeTripType(tripType)
+  ].join("_");
+}
 
-  if (!raw) {
-    return null;
-  }
-
-  var parsed = null;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    return null;
-  }
-
+function sanitizeStoredTripPayload(parsed) {
   if (!parsed || typeof parsed !== "object") {
     return null;
   }
 
   var destination = String(parsed.destination || "").trim();
+  var days = Number(parsed.days);
+  var budget = Number(parsed.budget);
+  var createdAtDate = parseDateLike(parsed.createdAt || parsed.savedAt) || new Date();
+  var tripType = normalizeTripType(parsed.tripType || parsed.travelType || "city");
+  var tripId = parsed.tripId && isUuid(parsed.tripId) ? String(parsed.tripId) : null;
+  var dailyPlan = sanitizeSavedDailyPlan(parsed.dailyPlan || parsed.itinerary || parsed.plan || []);
+  var title = sanitizeOptionalText(parsed.title || parsed.tripTitle || "", 120);
   var tripTitle = sanitizeOptionalText(parsed.tripTitle || parsed.title || "", 120);
   var groupName = sanitizeOptionalText(parsed.groupName || parsed.group || "", 120);
   var members = normalizeTripMembers(
     parsed.members || parsed.memberList || parsed.participants || parsed.memberNames || ""
   );
-  var days = Number(parsed.days);
-  var budget = Number(parsed.budget);
-  var tripType = normalizeTripType(parsed.tripType || parsed.travelType || "city");
-  var travelType = getTripTypeLabel(tripType);
-  var tripId = parsed.tripId && isUuid(parsed.tripId) ? String(parsed.tripId) : null;
-  var dailyPlan = sanitizeSavedDailyPlan(parsed.dailyPlan || parsed.plan || []);
+  var idValue = String(parsed.id || "").trim();
 
   if (
     !destination ||
@@ -1352,24 +1375,202 @@ function loadSavedPlanFromLocalStorage() {
     return null;
   }
 
+  if (!idValue) {
+    idValue = buildFallbackSavedTripId(destination, createdAtDate, days, budget, tripType);
+  }
+
   return {
-    destination: destination,
+    id: idValue,
+    title: title || formatDestinationForDisplay(destination) + " Trip",
     tripTitle: tripTitle,
-    groupName: groupName,
-    members: members,
+    destination: destination,
     days: days,
     budget: Number(budget.toFixed(2)),
+    createdAt: createdAtDate.toISOString(),
+    dailyPlan: dailyPlan,
+    itinerary: dailyPlan,
     tripType: tripType,
-    travelType: travelType,
-    tripId: tripId,
-    dailyPlan: dailyPlan
+    travelType: getTripTypeLabel(tripType),
+    groupName: groupName,
+    members: members,
+    tripId: tripId
   };
 }
 
-/**
- * @param {TripPlan} plan
- * @param {{dailyPlan: {morning: string, morningCost?: number, afternoon: string, afternoonCost?: number, evening: string, eveningCost?: number, estimatedCost?: number, notes: string}[]}} savedPlan
- */
+function loadSavedPlanFromLocalStorage() {
+  var storage = getBrowserLocalStorage();
+  if (!storage) {
+    return null;
+  }
+
+  var raw = null;
+  try {
+    raw = storage.getItem(SAVED_PLAN_STORAGE_KEY);
+  } catch (error) {
+    return null;
+  }
+
+  if (!raw) {
+    return null;
+  }
+
+  var parsed = parseJsonSafely(raw, "LocalSave");
+  if (!parsed) {
+    return null;
+  }
+
+  return sanitizeStoredTripPayload(parsed);
+}
+
+function normalizeSavedTripsCollection(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map(sanitizeStoredTripPayload)
+    .filter(Boolean)
+    .sort(function sortSavedTrips(a, b) {
+      var timeDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+      return String(b.id).localeCompare(String(a.id));
+    })
+    .slice(0, MY_TRIPS_LIMIT);
+}
+
+function getSavedTripsFromLocalStorage() {
+  var storage = getBrowserLocalStorage();
+  if (!storage) {
+    return [];
+  }
+
+  var raw = null;
+  try {
+    raw = storage.getItem(MY_TRIPS_STORAGE_KEY);
+    if (!raw) {
+      raw = storage.getItem(LEGACY_MY_TRIPS_STORAGE_KEY);
+    }
+  } catch (error) {
+    return [];
+  }
+
+  if (!raw) {
+    return [];
+  }
+
+  var parsed = parseJsonSafely(raw, "MyTrips");
+  if (!parsed) {
+    return [];
+  }
+
+  var normalizedTrips = normalizeSavedTripsCollection(parsed);
+
+  try {
+    storage.setItem(MY_TRIPS_STORAGE_KEY, JSON.stringify(normalizedTrips));
+    if (storage.getItem(LEGACY_MY_TRIPS_STORAGE_KEY)) {
+      storage.removeItem(LEGACY_MY_TRIPS_STORAGE_KEY);
+    }
+  } catch (error) {
+    return normalizedTrips;
+  }
+
+  return normalizedTrips;
+}
+
+function persistSavedTripsToLocalStorage(trips) {
+  var storage = getBrowserLocalStorage();
+  if (!storage) {
+    return null;
+  }
+
+  var normalizedTrips = normalizeSavedTripsCollection(trips);
+
+  try {
+    storage.setItem(MY_TRIPS_STORAGE_KEY, JSON.stringify(normalizedTrips));
+    if (storage.getItem(LEGACY_MY_TRIPS_STORAGE_KEY)) {
+      storage.removeItem(LEGACY_MY_TRIPS_STORAGE_KEY);
+    }
+    return normalizedTrips;
+  } catch (error) {
+    return null;
+  }
+}
+
+function getSavedTripDisplayTitle(savedTrip) {
+  if (!savedTrip) {
+    return "Gespeicherte Reise";
+  }
+
+  var explicitTitle = sanitizeOptionalText(savedTrip.title || savedTrip.tripTitle || "", 120);
+  if (explicitTitle) {
+    return explicitTitle;
+  }
+
+  return formatDestinationForDisplay(savedTrip.destination) + " Trip";
+}
+
+function saveTripToMyTrips(plan, tripId) {
+  if (!plan || !plan.input || !Array.isArray(plan.itinerary)) {
+    return null;
+  }
+
+  var existingTrips = getSavedTripsFromLocalStorage();
+  var tripRecord = sanitizeStoredTripPayload({
+    id: createSavedTripId(),
+    title: getResolvedTripTitle(plan.input),
+    destination: plan.input.destination,
+    tripTitle: sanitizeOptionalText(plan.input.tripTitle || "", 120),
+    groupName: sanitizeOptionalText(plan.input.groupName || "", 120),
+    members: normalizeTripMembers(plan.input.members),
+    days: plan.input.days,
+    budget: plan.input.totalBudget,
+    tripType: normalizeTripType(plan.input.tripType),
+    createdAt: new Date().toISOString(),
+    dailyPlan: plan.itinerary.map(function (day) {
+      return {
+        morning: String(day.morning || ""),
+        morningCost: Number.isFinite(Number(day.morningCost)) ? Number(day.morningCost) : 0,
+        afternoon: String(day.afternoon || ""),
+        afternoonCost: Number.isFinite(Number(day.afternoonCost)) ? Number(day.afternoonCost) : 0,
+        evening: String(day.evening || ""),
+        eveningCost: Number.isFinite(Number(day.eveningCost)) ? Number(day.eveningCost) : 0,
+        estimatedCost: Number.isFinite(Number(day.estimatedCost)) ? Number(day.estimatedCost) : 0,
+        notes: String(day.notes || "")
+      };
+    }),
+    tripId: tripId && isUuid(tripId) ? String(tripId) : null
+  });
+
+  if (!tripRecord) {
+    return null;
+  }
+
+  existingTrips.unshift(tripRecord);
+  var persistedTrips = persistSavedTripsToLocalStorage(existingTrips);
+  return Array.isArray(persistedTrips) && persistedTrips.length ? persistedTrips[0] : null;
+}
+
+function deleteSavedTripFromLocalStorage(savedId) {
+  var normalizedId = String(savedId || "").trim();
+  if (!normalizedId) {
+    return false;
+  }
+
+  var existingTrips = getSavedTripsFromLocalStorage();
+  var nextTrips = existingTrips.filter(function (trip) {
+    return String(trip && trip.id ? trip.id : "") !== normalizedId;
+  });
+
+  if (nextTrips.length === existingTrips.length) {
+    return false;
+  }
+
+  var persistedTrips = persistSavedTripsToLocalStorage(nextTrips);
+  return Array.isArray(persistedTrips);
+}
+
 function applySavedPlanEdits(plan, savedPlan) {
   if (!plan || !Array.isArray(plan.itinerary) || !savedPlan || !Array.isArray(savedPlan.dailyPlan)) {
     return;
@@ -1550,14 +1751,15 @@ function isValidTripInput(input) {
  * @returns {TripInput}
  */
 function sanitizeTripInput(input) {
+  var source = input && typeof input === "object" ? input : {};
   return {
-    destination: String(input.destination || "").trim(),
-    tripTitle: sanitizeOptionalText(input.tripTitle || "", 120),
-    groupName: sanitizeOptionalText(input.groupName || "", 120),
-    members: normalizeTripMembers(input.members),
-    days: Number(input.days),
-    totalBudget: Number(Number(input.totalBudget || 0).toFixed(2)),
-    tripType: normalizeTripType(input.tripType),
+    destination: String(source.destination || "").trim(),
+    tripTitle: sanitizeOptionalText(source.tripTitle || "", 120),
+    groupName: sanitizeOptionalText(source.groupName || "", 120),
+    members: normalizeTripMembers(source.members),
+    days: Number(source.days),
+    totalBudget: Number(Number(source.totalBudget || 0).toFixed(2)),
+    tripType: normalizeTripType(source.tripType),
     currency: "EUR"
   };
 }
@@ -1613,6 +1815,9 @@ function saveTripToSupabase(plan, editorClientId) {
     .select("id")
     .single()
     .then(function (response) {
+      if (!response || typeof response !== "object") {
+        return null;
+      }
       if (response.error || !response.data || !response.data.id) {
         if (response.error) {
           console.error("[Flyra Supabase] Speichern fehlgeschlagen.", response.error);
@@ -1649,6 +1854,9 @@ function updateTripPlanInSupabase(tripId, plan, editorClientId) {
     .select("id")
     .maybeSingle()
     .then(function (response) {
+      if (!response || typeof response !== "object") {
+        return false;
+      }
       if (response.error || !response.data || !response.data.id) {
         if (response.error) {
           console.error("[Flyra Supabase] Update fehlgeschlagen.", response.error);
@@ -1680,6 +1888,9 @@ function loadTripFromSupabase(tripId) {
     .eq("id", tripId)
     .maybeSingle()
     .then(function (response) {
+      if (!response || typeof response !== "object") {
+        return null;
+      }
       if (response.error || !response.data) {
         if (response.error) {
           console.error("[Flyra Supabase] Laden fehlgeschlagen.", response.error);
@@ -1688,7 +1899,12 @@ function loadTripFromSupabase(tripId) {
       }
 
       var row = response.data;
-      var storedPlan = row.plan_data && typeof row.plan_data === "object" ? row.plan_data : null;
+      if (!row || typeof row !== "object") {
+        return null;
+      }
+
+      var storedPlan =
+        row.plan_data && typeof row.plan_data === "object" && !Array.isArray(row.plan_data) ? row.plan_data : null;
       var input = sanitizeTripInput({
         destination: row.destination || (storedPlan && storedPlan.input ? storedPlan.input.destination : ""),
         tripTitle: storedPlan && storedPlan.input ? storedPlan.input.tripTitle : "",
@@ -2264,7 +2480,6 @@ function exportPlanAsPdf(plan, feedbackEl, triggerButton) {
       });
 
       doc.save(buildPdfFilename(plan.input));
-      console.log("PDF export started");
     })
     .then(function () {
       renderExportFeedback(feedbackEl, PDF_EXPORT_SUCCESS_MESSAGE, "success");
@@ -2446,28 +2661,19 @@ function copyToClipboard(text) {
   if (canUseModernClipboard) {
     return navigator.clipboard
       .writeText(text)
-      .then(function () {
-        console.info("[Flyra Share] Modernes Clipboard genutzt.");
-      })
+      .then(function () {})
       .catch(function (modernError) {
-        console.warn("[Flyra Share] Modernes Clipboard fehlgeschlagen, versuche Fallback.", modernError);
         return copyWithExecCommand(text)
-          .then(function () {
-            console.info("[Flyra Share] Fallback via execCommand genutzt.");
-          })
+          .then(function () {})
           .catch(function (fallbackError) {
-            console.error("[Flyra Share] Clipboard und Fallback fehlgeschlagen.", fallbackError);
             throw fallbackError;
           });
       });
   }
 
   return copyWithExecCommand(text)
-    .then(function () {
-      console.info("[Flyra Share] Fallback via execCommand genutzt.");
-    })
+    .then(function () {})
     .catch(function (fallbackError) {
-      console.error("[Flyra Share] Clipboard und Fallback fehlgeschlagen.", fallbackError);
       throw fallbackError;
     });
 }
@@ -2489,7 +2695,6 @@ function getShareInputFromUrl() {
   var titleParam = params.get("title");
   var groupParam = params.get("group");
   var membersParam = params.get("members");
-  console.log("Restore values:", destinationParam, daysParam, budgetParam, travelTypeParam || typeParam);
 
   var hasAllRequiredParams =
     destinationParam !== null &&
@@ -2992,8 +3197,68 @@ function wrapPlacesWithLinks(text, destination, slot) {
  * @param {string} destination
  * @returns {string}
  */
+function normalizeMapsSearchValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildMapsSearchQuery(placeName, destination) {
+  var activityLabel = String(placeName || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!activityLabel) {
+    return "";
+  }
+
+  var destinationLabel = formatDestinationForDisplay(destination);
+  var normalizedActivity = normalizeMapsSearchValue(activityLabel);
+  var normalizedDestination = normalizeMapsSearchValue(destinationLabel);
+
+  if (destinationLabel && normalizedDestination && normalizedActivity.indexOf(normalizedDestination) === -1) {
+    return activityLabel + " " + destinationLabel;
+  }
+
+  return activityLabel;
+}
+
 function buildMapsSearchUrl(placeName, destination) {
-  return createGoogleMapsLink(placeName, destination);
+  var query = buildMapsSearchQuery(placeName, destination);
+  if (!query) {
+    return "";
+  }
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(query).replace(/%20/g, "+");
+}
+
+function updateActivityMapsButtonState(buttonEl, activityText, destination) {
+  if (!buttonEl) {
+    return;
+  }
+
+  var cleanActivity = String(activityText || "").replace(/\s+/g, " ").trim();
+  var cleanDestination = String(destination || "").replace(/\s+/g, " ").trim();
+  var query = buildMapsSearchQuery(cleanActivity, cleanDestination);
+  var hasQuery = Boolean(query);
+
+  buttonEl.disabled = !hasQuery;
+  buttonEl.setAttribute("aria-disabled", hasQuery ? "false" : "true");
+  buttonEl.setAttribute("data-activity-text", cleanActivity);
+  buttonEl.setAttribute("data-destination", cleanDestination);
+  buttonEl.setAttribute("data-maps-query", query);
+  buttonEl.title = hasQuery
+    ? "In Google Maps oeffnen"
+    : "Aktivitaet eingeben, um Google Maps zu oeffnen";
+}
+
+function openActivityInGoogleMaps(activityText, destination) {
+  var mapsUrl = buildMapsSearchUrl(activityText, destination);
+  if (!mapsUrl || typeof window === "undefined" || typeof window.open !== "function") {
+    return false;
+  }
+
+  window.open(mapsUrl, "_blank", "noopener,noreferrer");
+  return true;
 }
 
 /**
@@ -3281,19 +3546,34 @@ function buildItinerary(input, dailyBudget) {
  * @param {HTMLElement} rootEl
  */
 function renderErrors(errors, rootEl) {
+  if (!rootEl) {
+    return;
+  }
+
   clearElement(rootEl);
 
-  if (!errors || errors.length === 0) {
+  var safeErrors = Array.isArray(errors) ? errors.filter(Boolean) : [];
+  if (safeErrors.length === 0) {
     rootEl.classList.add("is-hidden");
     return;
   }
 
   rootEl.classList.remove("is-hidden");
 
+  var heading = document.createElement("p");
+  heading.className = "error-title";
+  heading.textContent = "Eingaben prüfen";
+  rootEl.appendChild(heading);
+
+  var intro = document.createElement("p");
+  intro.className = "error-copy";
+  intro.textContent = "Bitte korrigiere die markierten Punkte, damit Flyra den Plan sauber erstellen kann.";
+  rootEl.appendChild(intro);
+
   var list = document.createElement("ul");
   list.className = "error-list";
 
-  errors.forEach(function (error) {
+  safeErrors.forEach(function (error) {
     var item = document.createElement("li");
     item.textContent = error;
     list.appendChild(item);
@@ -3303,50 +3583,102 @@ function renderErrors(errors, rootEl) {
 }
 
 function hideResult(rootEl, resetButton) {
-  clearElement(rootEl);
-  rootEl.classList.add("is-hidden");
+  if (rootEl) {
+    clearElement(rootEl);
+    rootEl.classList.add("is-hidden");
+  }
 
   if (resetButton) {
     resetButton.classList.add("is-hidden");
   }
 }
 
-/**
- * @param {TripPlan} plan
- * @param {HTMLElement} rootEl
- * @param {HTMLFormElement | undefined} formEl
- * @param {{
- *   onItineraryFieldInput?: ((dayIndex: number, slot: "morning" | "afternoon" | "evening" | "notes", value: string, flushNow: boolean) => number | null | undefined),
- *   onMoveDay?: ((dayIndex: number, direction: "up" | "down") => void),
- *   collabIndicatorText?: string,
- *   collabStatusState?: "local-saved" | "syncing" | "synced" | "inactive" | "remote-update",
- *   collabStatusMessage?: string,
- *   collabLastSavedAt?: Date | string | number | null
- * } | undefined} options
- */
-function renderPlan(plan, rootEl, formEl, options) {
+function normalizeRenderPlanOptions(options) {
   var normalizedOptions = options || {};
-  var onItineraryFieldInput =
-    typeof normalizedOptions.onItineraryFieldInput === "function"
-      ? normalizedOptions.onItineraryFieldInput
-      : null;
-  var onMoveDay = typeof normalizedOptions.onMoveDay === "function" ? normalizedOptions.onMoveDay : null;
   var collabStatusState = normalizeCollabStatusState(normalizedOptions.collabStatusState || "inactive");
   var collabStatusMessage = String(normalizedOptions.collabStatusMessage || "").trim();
   var collabIndicatorText = String(normalizedOptions.collabIndicatorText || "").trim();
+
   if (!collabStatusMessage && collabIndicatorText) {
     collabStatusMessage = collabIndicatorText;
     collabStatusState = "remote-update";
   }
-  var collabLastSavedAt = normalizedOptions.collabLastSavedAt || null;
 
-  clearElement(rootEl);
-  rootEl.classList.remove("is-hidden");
-  var formattedDestination = formatDestinationForDisplay(plan.input.destination);
-  var resolvedTripTitle = getResolvedTripTitle(plan.input);
-  var resolvedGroupName = sanitizeOptionalText(plan.input.groupName, 120);
-  var resolvedMembers = normalizeTripMembers(plan.input.members);
+  return {
+    onItineraryFieldInput:
+      typeof normalizedOptions.onItineraryFieldInput === "function"
+        ? normalizedOptions.onItineraryFieldInput
+        : null,
+    onMoveDay: typeof normalizedOptions.onMoveDay === "function" ? normalizedOptions.onMoveDay : null,
+    onSaveTrip: typeof normalizedOptions.onSaveTrip === "function" ? normalizedOptions.onSaveTrip : null,
+    collabStatusState: collabStatusState,
+    collabStatusMessage: collabStatusMessage,
+    collabLastSavedAt: normalizedOptions.collabLastSavedAt || null
+  };
+}
 
+function isRenderableTripPlan(plan) {
+  if (!plan || typeof plan !== "object" || !plan.input) {
+    return false;
+  }
+
+  return isValidTripInput(sanitizeTripInput(plan.input));
+}
+
+function createResultMessageSection(title, message) {
+  var section = document.createElement("section");
+  section.className = "result-section";
+
+  var titleEl = document.createElement("h3");
+  titleEl.className = "section-title";
+  titleEl.textContent = String(title || "");
+  section.appendChild(titleEl);
+
+  if (message) {
+    var copyEl = document.createElement("p");
+    copyEl.className = "itinerary-lead";
+    copyEl.textContent = String(message);
+    section.appendChild(copyEl);
+  }
+
+  return section;
+}
+
+function createPlanRenderContext(plan) {
+  var safeInput = sanitizeTripInput(plan && plan.input);
+  return {
+    input: safeInput,
+    formattedDestination: formatDestinationForDisplay(safeInput.destination),
+    resolvedTripTitle: getResolvedTripTitle(safeInput),
+    resolvedGroupName: sanitizeOptionalText(safeInput.groupName, 120),
+    resolvedMembers: normalizeTripMembers(safeInput.members)
+  };
+}
+
+function createPlanGeneratedSection(context) {
+  var generatedSection = document.createElement("section");
+  generatedSection.className = "result-section result-section--generated";
+
+  var generatedBadge = document.createElement("span");
+  generatedBadge.className = "result-generated-badge";
+  generatedBadge.textContent = "Plan erstellt";
+  generatedSection.appendChild(generatedBadge);
+
+  var generatedTitle = document.createElement("p");
+  generatedTitle.className = "result-generated-title";
+  generatedTitle.textContent = context.resolvedTripTitle;
+  generatedSection.appendChild(generatedTitle);
+
+  var generatedCopy = document.createElement("p");
+  generatedCopy.className = "result-generated-copy";
+  generatedCopy.textContent =
+    "Dein Reiseplan ist bereit. Du kannst Tage jetzt bearbeiten, neu anordnen, teilen und als PDF exportieren.";
+  generatedSection.appendChild(generatedCopy);
+
+  return generatedSection;
+}
+
+function createPlanSummarySection(plan, context) {
   var summarySection = document.createElement("section");
   summarySection.className = "result-section result-section--summary";
 
@@ -3357,7 +3689,7 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var heading = document.createElement("h2");
   heading.className = "result-title";
-  heading.textContent = resolvedTripTitle;
+  heading.textContent = context.resolvedTripTitle;
   summarySection.appendChild(heading);
 
   var summaryMeta = document.createElement("div");
@@ -3365,13 +3697,13 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var destinationMeta = document.createElement("p");
   destinationMeta.className = "result-destination";
-  destinationMeta.textContent = "Reiseziel: " + formattedDestination;
+  destinationMeta.textContent = "Reiseziel: " + context.formattedDestination;
   summaryMeta.appendChild(destinationMeta);
 
-  if (resolvedGroupName) {
+  if (context.resolvedGroupName) {
     var groupChip = document.createElement("span");
     groupChip.className = "result-group-chip";
-    groupChip.textContent = "Gruppe: " + resolvedGroupName;
+    groupChip.textContent = "Gruppe: " + context.resolvedGroupName;
     summaryMeta.appendChild(groupChip);
   }
 
@@ -3379,10 +3711,10 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var summaryLead = document.createElement("p");
   summaryLead.className = "lead result-lead";
-  summaryLead.textContent = "Hier ist dein Plan für " + plan.input.days + " Tage inklusive Budgetaufteilung.";
+  summaryLead.textContent = "Hier ist dein Plan für " + context.input.days + " Tage inklusive Budgetaufteilung.";
   summarySection.appendChild(summaryLead);
 
-  if (resolvedMembers.length > 0) {
+  if (context.resolvedMembers.length > 0) {
     var membersBlock = document.createElement("div");
     membersBlock.className = "result-members-block";
 
@@ -3393,7 +3725,7 @@ function renderPlan(plan, rootEl, formEl, options) {
 
     var membersList = document.createElement("div");
     membersList.className = "result-members-list member-list";
-    resolvedMembers.forEach(function (member) {
+    context.resolvedMembers.forEach(function (member) {
       var memberItem = document.createElement("div");
       memberItem.className = "member-item";
 
@@ -3422,17 +3754,37 @@ function renderPlan(plan, rootEl, formEl, options) {
   var summaryGrid = document.createElement("div");
   summaryGrid.className = "summary-grid";
 
-  summaryGrid.appendChild(createSummaryChip("Reiseziel", formattedDestination));
-  summaryGrid.appendChild(createSummaryChip("Reisetyp", getTripTypeLabel(plan.input.tripType)));
-  summaryGrid.appendChild(createSummaryChip("Reisedauer", String(plan.input.days) + " Tage"));
-  summaryGrid.appendChild(createSummaryChip("Gesamtbudget", formatCurrency(plan.input.totalBudget)));
-  if (resolvedGroupName) {
-    summaryGrid.appendChild(createSummaryChip("Gruppe", resolvedGroupName));
+  var costPerPerson = getCostPerPerson(context.input.totalBudget, context.resolvedMembers.length);
+  summaryGrid.appendChild(createSummaryChip("Reiseziel", context.formattedDestination));
+  summaryGrid.appendChild(createSummaryChip("Reisetyp", getTripTypeLabel(context.input.tripType)));
+  summaryGrid.appendChild(createSummaryChip("Reisedauer", String(context.input.days) + " Tage"));
+  summaryGrid.appendChild(createSummaryChip("Gesamtbudget", formatCurrency(context.input.totalBudget)));
+  if (costPerPerson !== null) {
+    summaryGrid.appendChild(createSummaryChip("Kosten pro Person", formatCurrency(costPerPerson)));
+  }
+  if (context.resolvedGroupName) {
+    summaryGrid.appendChild(createSummaryChip("Gruppe", context.resolvedGroupName));
   }
 
   summarySection.appendChild(summaryGrid);
-  rootEl.appendChild(summarySection);
+  return summarySection;
+}
 
+function resolveShareInput(planInput, formEl) {
+  var shareInput = sanitizeTripInput(planInput);
+  if (!formEl) {
+    return shareInput;
+  }
+
+  var parsedFormInput = parseAndValidateInput(formEl);
+  if (Array.isArray(parsedFormInput)) {
+    return shareInput;
+  }
+
+  return sanitizeTripInput(parsedFormInput);
+}
+
+function createPlanShareSection(plan, formEl, onSaveTrip) {
   var shareSection = document.createElement("section");
   shareSection.className = "result-section result-section--share";
 
@@ -3456,6 +3808,13 @@ function renderPlan(plan, rootEl, formEl, options) {
   pdfButton.textContent = "Plan als PDF exportieren";
   shareActions.appendChild(pdfButton);
 
+  var saveTripButton = document.createElement("button");
+  saveTripButton.type = "button";
+  saveTripButton.id = "save-trip-btn";
+  saveTripButton.className = "btn-secondary save-trip-button";
+  saveTripButton.textContent = "Reise speichern";
+  saveTripButton.disabled = !onSaveTrip;
+  shareActions.appendChild(saveTripButton);
   shareSection.appendChild(shareActions);
 
   var shareFeedback = document.createElement("p");
@@ -3489,21 +3848,11 @@ function renderPlan(plan, rootEl, formEl, options) {
     manualShareInput.select();
   });
   manualShare.appendChild(manualShareInput);
-
   shareSection.appendChild(manualShare);
 
   shareButton.addEventListener("click", function handleShareClick() {
-    var shareInput = plan.input;
-
-    if (formEl) {
-      var parsedFormInput = parseAndValidateInput(formEl);
-      if (!Array.isArray(parsedFormInput)) {
-        shareInput = parsedFormInput;
-      }
-    }
-
+    var shareInput = resolveShareInput(plan.input, formEl);
     var shareUrl = buildShareUrl(shareInput, currentTripId);
-    console.log("Share URL:", shareUrl);
 
     shareFeedback.classList.add("is-hidden");
     shareFeedback.classList.remove("share-feedback--error", "share-feedback--success");
@@ -3539,8 +3888,16 @@ function renderPlan(plan, rootEl, formEl, options) {
     exportPlanAsPdf(currentPlan, exportFeedback, pdfButton);
   });
 
-  rootEl.appendChild(shareSection);
+  if (onSaveTrip) {
+    saveTripButton.addEventListener("click", function handleSaveTripClick() {
+      onSaveTrip(plan);
+    });
+  }
 
+  return shareSection;
+}
+
+function createPlanDailyBudgetSection(plan) {
   var dailySection = document.createElement("section");
   dailySection.className = "result-section result-section--daily";
 
@@ -3558,12 +3915,24 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var dailyBudgetValue = document.createElement("span");
   dailyBudgetValue.className = "daily-budget-value";
-  dailyBudgetValue.textContent = formatCurrency(plan.dailyBudget);
+  dailyBudgetValue.textContent = formatCurrency(Number(plan && plan.dailyBudget ? plan.dailyBudget : 0));
 
   dailyBudget.appendChild(dailyBudgetLabel);
   dailyBudget.appendChild(dailyBudgetValue);
   dailySection.appendChild(dailyBudget);
-  rootEl.appendChild(dailySection);
+  return dailySection;
+}
+
+function createPlanBudgetStatusSection(plan) {
+  var dailyBudget = Number(plan && plan.dailyBudget ? plan.dailyBudget : 0);
+  var budgetStatusKey =
+    plan && (plan.budgetStatus === "rot" || plan.budgetStatus === "gelb" || plan.budgetStatus === "gruen")
+      ? plan.budgetStatus
+      : getBudgetStatus(dailyBudget);
+  var budgetStatusLabel = String(plan && plan.budgetStatusLabel ? plan.budgetStatusLabel : getBudgetStatusLabel(budgetStatusKey));
+  var budgetStatusHint = String(plan && plan.budgetStatusHint ? plan.budgetStatusHint : getBudgetStatusHint(budgetStatusKey));
+  var recommendedDays =
+    plan && Number.isFinite(Number(plan.recommendedDays)) ? Math.max(1, Number(plan.recommendedDays)) : null;
 
   var statusSection = document.createElement("section");
   statusSection.className = "result-section result-section--status";
@@ -3574,7 +3943,7 @@ function renderPlan(plan, rootEl, formEl, options) {
   statusSection.appendChild(statusSectionTitle);
 
   var budgetStatus = document.createElement("div");
-  budgetStatus.className = "budget-status budget-status--" + plan.budgetStatus;
+  budgetStatus.className = "budget-status budget-status--" + budgetStatusKey;
 
   var budgetStatusLine = document.createElement("p");
   budgetStatusLine.className = "budget-status-line";
@@ -3585,7 +3954,7 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var budgetStatusText = document.createElement("span");
   budgetStatusText.className = "budget-status-text";
-  budgetStatusText.textContent = "Budgetstatus: " + plan.budgetStatusLabel;
+  budgetStatusText.textContent = "Budgetstatus: " + budgetStatusLabel;
 
   budgetStatusLine.appendChild(budgetStatusDot);
   budgetStatusLine.appendChild(budgetStatusText);
@@ -3593,19 +3962,26 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var budgetHint = document.createElement("p");
   budgetHint.className = "budget-status-hint";
-  budgetHint.textContent = plan.budgetStatusHint;
+  budgetHint.textContent = budgetStatusHint;
   budgetStatus.appendChild(budgetHint);
 
-  if (plan.budgetStatus === "rot" && plan.recommendedDays !== null) {
+  if (budgetStatusKey === "rot" && recommendedDays !== null) {
     var budgetRecommendation = document.createElement("p");
     budgetRecommendation.className = "budget-status-recommendation";
-    budgetRecommendation.textContent = "Mit deinem aktuellen Budget wären eher " + plan.recommendedDays + " " + (plan.recommendedDays === 1 ? "Tag" : "Tage") + " realistischer.";
+    budgetRecommendation.textContent =
+      "Mit deinem aktuellen Budget wären eher " +
+      recommendedDays +
+      " " +
+      (recommendedDays === 1 ? "Tag" : "Tage") +
+      " realistischer.";
     budgetStatus.appendChild(budgetRecommendation);
   }
 
   statusSection.appendChild(budgetStatus);
-  rootEl.appendChild(statusSection);
+  return statusSection;
+}
 
+function createPlanBudgetSection(plan) {
   var budgetSection = document.createElement("section");
   budgetSection.className = "result-section result-section--budget";
 
@@ -3616,10 +3992,98 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var budgetTableWrap = document.createElement("div");
   budgetTableWrap.className = "budget-table-wrap";
-  budgetTableWrap.appendChild(createBudgetTable(plan.splitPercent, plan.splitAmount));
+  budgetTableWrap.appendChild(createBudgetTable(plan && plan.splitPercent, plan && plan.splitAmount));
   budgetSection.appendChild(budgetTableWrap);
-  rootEl.appendChild(budgetSection);
+  return budgetSection;
+}
 
+function createItineraryDayCard(plan, dayPlan, itineraryIndex, itineraryLength, onItineraryFieldInput, onMoveDay) {
+  var safeDayPlan = dayPlan && typeof dayPlan === "object" ? dayPlan : {};
+  var destination = plan && plan.input ? String(plan.input.destination || "") : "";
+  var card = document.createElement("article");
+  card.className = "day-card";
+
+  var dayHeader = document.createElement("div");
+  dayHeader.className = "day-header";
+
+  var dayTitle = document.createElement("h4");
+  dayTitle.className = "day-title";
+  dayTitle.textContent = "Tag " + String(Number.isFinite(Number(safeDayPlan.day)) ? safeDayPlan.day : itineraryIndex + 1);
+  dayHeader.appendChild(dayTitle);
+
+  if (onMoveDay) {
+    dayHeader.appendChild(createDayActions(itineraryIndex, itineraryLength, onMoveDay));
+  }
+
+  card.appendChild(dayHeader);
+
+  var dayContent = document.createElement("div");
+  dayContent.className = "day-card-content";
+
+  var slotList = document.createElement("ul");
+  slotList.className = "day-slot-list";
+  slotList.appendChild(createSlot({
+    dayIndex: itineraryIndex,
+    slot: "morning",
+    label: "Morgen",
+    value: safeDayPlan.morning,
+    cost: safeDayPlan.morningCost,
+    destination: destination,
+    editable: Boolean(onItineraryFieldInput)
+  }));
+  slotList.appendChild(createSlot({
+    dayIndex: itineraryIndex,
+    slot: "afternoon",
+    label: "Nachmittag",
+    value: safeDayPlan.afternoon,
+    cost: safeDayPlan.afternoonCost,
+    destination: destination,
+    editable: Boolean(onItineraryFieldInput)
+  }));
+  slotList.appendChild(createSlot({
+    dayIndex: itineraryIndex,
+    slot: "evening",
+    label: "Abend",
+    value: safeDayPlan.evening,
+    cost: safeDayPlan.eveningCost,
+    destination: destination,
+    editable: Boolean(onItineraryFieldInput)
+  }));
+  dayContent.appendChild(slotList);
+
+  dayContent.appendChild(createDayNotes({
+    label: "Notizen",
+    value: safeDayPlan.notes,
+    editable: Boolean(onItineraryFieldInput),
+    onInput: onItineraryFieldInput
+      ? function handleNotesInput(nextValue, flushNow) {
+          onItineraryFieldInput(itineraryIndex, "notes", nextValue, flushNow);
+        }
+      : null
+  }));
+
+  card.appendChild(dayContent);
+  card.appendChild(createDayBudgetStatusBlock(safeDayPlan.estimatedCost, plan.dailyBudget, itineraryIndex));
+
+  var dayCost = document.createElement("p");
+  dayCost.className = "day-cost";
+
+  var dayCostLabel = document.createElement("span");
+  dayCostLabel.className = "day-cost-label";
+  dayCostLabel.textContent = "Geplante Ausgaben";
+
+  var dayCostValue = document.createElement("span");
+  dayCostValue.className = "day-cost-value";
+  dayCostValue.setAttribute("data-day-estimated-cost", String(itineraryIndex));
+  dayCostValue.textContent = formatCurrency(Number(safeDayPlan.estimatedCost || 0));
+
+  dayCost.appendChild(dayCostLabel);
+  dayCost.appendChild(dayCostValue);
+  card.appendChild(dayCost);
+  return card;
+}
+
+function createPlanItinerarySection(plan, context, options) {
   var itinerarySection = document.createElement("section");
   itinerarySection.className = "result-section result-section--itinerary";
 
@@ -3630,124 +4094,114 @@ function renderPlan(plan, rootEl, formEl, options) {
 
   var itineraryLead = document.createElement("p");
   itineraryLead.className = "itinerary-lead";
-  itineraryLead.textContent = "Dein Ablauf pro Tag mit klaren Slots für Morgen, Nachmittag und Abend.";
+  itineraryLead.textContent =
+    "Jeder Tag ist klar gegliedert, direkt bearbeitbar und mit Budget- sowie Maps-Hinweisen ergänzt.";
   itinerarySection.appendChild(itineraryLead);
 
-  if (hasKnownDestinationPlaceSupport(plan.input)) {
+  if (hasKnownDestinationPlaceSupport(context.input)) {
     var itineraryNote = document.createElement("p");
     itineraryNote.className = "itinerary-lead";
     itineraryNote.textContent = "Flyra nutzt für dieses Ziel passendere Ortsvorschläge.";
     itinerarySection.appendChild(itineraryNote);
   }
 
-  itinerarySection.appendChild(createCollabStatusBar(collabStatusState, collabLastSavedAt, collabStatusMessage));
+  itinerarySection.appendChild(
+    createCollabStatusBar(options.collabStatusState, options.collabLastSavedAt, options.collabStatusMessage)
+  );
+
+  var itinerary = Array.isArray(plan && plan.itinerary) ? plan.itinerary : [];
+  if (!itinerary.length) {
+    var emptyItinerary = document.createElement("p");
+    emptyItinerary.className = "itinerary-lead";
+    emptyItinerary.textContent = "Für diese Reise liegen aktuell noch keine Tagesdaten vor.";
+    itinerarySection.appendChild(emptyItinerary);
+    return itinerarySection;
+  }
 
   var itineraryGrid = document.createElement("div");
   itineraryGrid.className = "itinerary-grid";
 
-  plan.itinerary.forEach(function (dayPlan, itineraryIndex) {
-    var card = document.createElement("article");
-    card.className = "day-card";
-
-    var dayHeader = document.createElement("div");
-    dayHeader.className = "day-header";
-
-    var dayTitle = document.createElement("h4");
-    dayTitle.className = "day-title";
-    dayTitle.textContent = "Tag " + dayPlan.day;
-    dayHeader.appendChild(dayTitle);
-
-    if (onMoveDay) {
-      dayHeader.appendChild(createDayActions(itineraryIndex, plan.itinerary.length, onMoveDay));
-    }
-
-    card.appendChild(dayHeader);
-
-    var dayContent = document.createElement("div");
-    dayContent.className = "day-card-content";
-
-    var slotList = document.createElement("ul");
-    slotList.className = "day-slot-list";
-    slotList.appendChild(createSlot({
-      dayIndex: itineraryIndex,
-      slot: "morning",
-      label: "Morgen",
-      value: dayPlan.morning,
-      cost: dayPlan.morningCost,
-      destination: plan.input.destination,
-      editable: Boolean(onItineraryFieldInput),
-      onInput: onItineraryFieldInput
-        ? function handleMorningInput(nextValue, flushNow) {
-            return onItineraryFieldInput(itineraryIndex, "morning", nextValue, flushNow);
-          }
-        : null
-    }));
-    slotList.appendChild(createSlot({
-      dayIndex: itineraryIndex,
-      slot: "afternoon",
-      label: "Nachmittag",
-      value: dayPlan.afternoon,
-      cost: dayPlan.afternoonCost,
-      destination: plan.input.destination,
-      editable: Boolean(onItineraryFieldInput),
-      onInput: onItineraryFieldInput
-        ? function handleAfternoonInput(nextValue, flushNow) {
-            return onItineraryFieldInput(itineraryIndex, "afternoon", nextValue, flushNow);
-          }
-        : null
-    }));
-    slotList.appendChild(createSlot({
-      dayIndex: itineraryIndex,
-      slot: "evening",
-      label: "Abend",
-      value: dayPlan.evening,
-      cost: dayPlan.eveningCost,
-      destination: plan.input.destination,
-      editable: Boolean(onItineraryFieldInput),
-      onInput: onItineraryFieldInput
-        ? function handleEveningInput(nextValue, flushNow) {
-            return onItineraryFieldInput(itineraryIndex, "evening", nextValue, flushNow);
-          }
-        : null
-    }));
-    dayContent.appendChild(slotList);
-
-    dayContent.appendChild(createDayNotes({
-      label: "Notizen",
-      value: dayPlan.notes,
-      editable: Boolean(onItineraryFieldInput),
-      onInput: onItineraryFieldInput
-        ? function handleNotesInput(nextValue, flushNow) {
-            onItineraryFieldInput(itineraryIndex, "notes", nextValue, flushNow);
-          }
-        : null
-    }));
-
-    card.appendChild(dayContent);
-
-    card.appendChild(createDayBudgetStatusBlock(dayPlan.estimatedCost, plan.dailyBudget, itineraryIndex));
-
-    var dayCost = document.createElement("p");
-    dayCost.className = "day-cost";
-
-    var dayCostLabel = document.createElement("span");
-    dayCostLabel.className = "day-cost-label";
-    dayCostLabel.textContent = "Geplante Ausgaben";
-
-    var dayCostValue = document.createElement("span");
-    dayCostValue.className = "day-cost-value";
-    dayCostValue.setAttribute("data-day-estimated-cost", String(itineraryIndex));
-    dayCostValue.textContent = formatCurrency(dayPlan.estimatedCost);
-
-    dayCost.appendChild(dayCostLabel);
-    dayCost.appendChild(dayCostValue);
-    card.appendChild(dayCost);
-
-    itineraryGrid.appendChild(card);
+  itinerary.forEach(function (dayPlan, itineraryIndex) {
+    itineraryGrid.appendChild(
+      createItineraryDayCard(
+        plan,
+        dayPlan,
+        itineraryIndex,
+        itinerary.length,
+        options.onItineraryFieldInput,
+        options.onMoveDay
+      )
+    );
   });
 
   itinerarySection.appendChild(itineraryGrid);
-  rootEl.appendChild(itinerarySection);
+  return itinerarySection;
+}
+
+function syncResultMapsButtons(rootEl) {
+  if (!rootEl || typeof rootEl.querySelectorAll !== "function") {
+    return;
+  }
+
+  Array.prototype.forEach.call(rootEl.querySelectorAll(".activity-map-btn"), function (buttonEl) {
+    var key = String(buttonEl.getAttribute("data-slot-maps") || "").trim();
+    var inputEl = key ? rootEl.querySelector('[data-activity-key="' + key + '"]') : null;
+    var activityText =
+      inputEl && typeof inputEl.value === "string"
+        ? inputEl.value
+        : String(buttonEl.getAttribute("data-activity-text") || "");
+    var destination =
+      inputEl && typeof inputEl.getAttribute === "function"
+        ? String(inputEl.getAttribute("data-destination") || buttonEl.getAttribute("data-destination") || "")
+        : String(buttonEl.getAttribute("data-destination") || "");
+    updateActivityMapsButtonState(buttonEl, activityText, destination);
+  });
+}
+
+/**
+ * @param {TripPlan} plan
+ * @param {HTMLElement} rootEl
+ * @param {HTMLFormElement | undefined} formEl
+ * @param {{
+ *   onItineraryFieldInput?: ((dayIndex: number, slot: "morning" | "afternoon" | "evening" | "notes", value: string, flushNow: boolean) => number | null | undefined),
+ *   onMoveDay?: ((dayIndex: number, direction: "up" | "down") => void),
+ *   onSaveTrip?: ((plan: TripPlan) => void),
+ *   collabIndicatorText?: string,
+ *   collabStatusState?: "local-saved" | "syncing" | "synced" | "inactive" | "remote-update",
+ *   collabStatusMessage?: string,
+ *   collabLastSavedAt?: Date | string | number | null
+ * } | undefined} options
+ */
+function renderPlan(plan, rootEl, formEl, options) {
+  if (!rootEl) {
+    return;
+  }
+
+  var normalizedOptions = normalizeRenderPlanOptions(options);
+  clearElement(rootEl);
+  rootEl.classList.remove("is-hidden");
+
+  if (!isRenderableTripPlan(plan)) {
+    rootEl.appendChild(
+      createResultMessageSection(
+        "Reiseplan aktuell nicht verfügbar",
+        "Die Reisedaten konnten nicht vollständig geladen werden. Bitte generiere den Plan erneut."
+      )
+    );
+    return;
+  }
+
+  ensureItineraryNotes(plan);
+  var context = createPlanRenderContext(plan);
+
+  rootEl.appendChild(createPlanGeneratedSection(context));
+  rootEl.appendChild(createPlanSummarySection(plan, context));
+  rootEl.appendChild(createPlanShareSection(plan, formEl, normalizedOptions.onSaveTrip));
+  rootEl.appendChild(createPlanDailyBudgetSection(plan));
+  rootEl.appendChild(createPlanBudgetStatusSection(plan));
+  rootEl.appendChild(createPlanBudgetSection(plan));
+  rootEl.appendChild(createPlanItinerarySection(plan, context, normalizedOptions));
+  syncResultMapsButtons(rootEl);
 }
 
 /**
@@ -3757,8 +4211,10 @@ function renderPlan(plan, rootEl, formEl, options) {
  * @returns {HTMLDivElement}
  */
 function createDayBudgetStatusBlock(dayTotal, dailyBudget, dayIndex) {
-  var status = getDayBudgetStatus(dayTotal, dailyBudget);
-  var normalizedIndex = String(dayIndex);
+  var safeDayTotal = Number.isFinite(Number(dayTotal)) ? Number(dayTotal) : 0;
+  var safeDailyBudget = Number.isFinite(Number(dailyBudget)) ? Number(dailyBudget) : 0;
+  var status = getDayBudgetStatus(safeDayTotal, safeDailyBudget);
+  var normalizedIndex = String(Number.isInteger(Number(dayIndex)) ? Number(dayIndex) : 0);
 
   var wrap = document.createElement("div");
   wrap.className = "day-budget-status day-budget-status--" + status.key;
@@ -3791,7 +4247,7 @@ function createDayBudgetStatusBlock(dayTotal, dailyBudget, dayIndex) {
   var budgetValue = document.createElement("span");
   budgetValue.className = "day-budget-value";
   budgetValue.setAttribute("data-day-budget-limit", normalizedIndex);
-  budgetValue.textContent = formatCurrency(dailyBudget);
+  budgetValue.textContent = formatCurrency(safeDailyBudget);
   budgetRow.appendChild(budgetLabel);
   budgetRow.appendChild(budgetValue);
   valueList.appendChild(budgetRow);
@@ -3804,7 +4260,7 @@ function createDayBudgetStatusBlock(dayTotal, dailyBudget, dayIndex) {
   var plannedValue = document.createElement("span");
   plannedValue.className = "day-budget-value";
   plannedValue.setAttribute("data-day-budget-planned", normalizedIndex);
-  plannedValue.textContent = formatCurrency(dayTotal);
+  plannedValue.textContent = formatCurrency(safeDayTotal);
   plannedRow.appendChild(plannedLabel);
   plannedRow.appendChild(plannedValue);
   valueList.appendChild(plannedRow);
@@ -3822,15 +4278,19 @@ function createDayBudgetStatusBlock(dayTotal, dailyBudget, dayIndex) {
 function createDayActions(dayIndex, dayCount, onMoveDay) {
   var actions = document.createElement("div");
   actions.className = "day-actions";
+  var safeDayIndex = Number.isInteger(Number(dayIndex)) ? Number(dayIndex) : 0;
+  var safeDayCount = Number.isInteger(Number(dayCount)) ? Number(dayCount) : 0;
 
   var moveUpButton = document.createElement("button");
   moveUpButton.type = "button";
   moveUpButton.className = "day-move-btn";
   moveUpButton.textContent = "Nach oben";
-  moveUpButton.disabled = dayIndex <= 0;
-  moveUpButton.setAttribute("aria-label", "Tag " + String(dayIndex + 1) + " nach oben verschieben");
+  moveUpButton.disabled = safeDayIndex <= 0 || typeof onMoveDay !== "function";
+  moveUpButton.setAttribute("aria-label", "Tag " + String(safeDayIndex + 1) + " nach oben verschieben");
   moveUpButton.addEventListener("click", function handleMoveUpClick() {
-    onMoveDay(dayIndex, "up");
+    if (typeof onMoveDay === "function") {
+      onMoveDay(safeDayIndex, "up");
+    }
   });
   actions.appendChild(moveUpButton);
 
@@ -3838,14 +4298,23 @@ function createDayActions(dayIndex, dayCount, onMoveDay) {
   moveDownButton.type = "button";
   moveDownButton.className = "day-move-btn";
   moveDownButton.textContent = "Nach unten";
-  moveDownButton.disabled = dayIndex >= dayCount - 1;
-  moveDownButton.setAttribute("aria-label", "Tag " + String(dayIndex + 1) + " nach unten verschieben");
+  moveDownButton.disabled = safeDayIndex >= safeDayCount - 1 || typeof onMoveDay !== "function";
+  moveDownButton.setAttribute("aria-label", "Tag " + String(safeDayIndex + 1) + " nach unten verschieben");
   moveDownButton.addEventListener("click", function handleMoveDownClick() {
-    onMoveDay(dayIndex, "down");
+    if (typeof onMoveDay === "function") {
+      onMoveDay(safeDayIndex, "down");
+    }
   });
   actions.appendChild(moveDownButton);
 
   return actions;
+}
+
+function createSlotHelperLabel(text) {
+  var labelEl = document.createElement("span");
+  labelEl.className = "slot-helper-label";
+  labelEl.textContent = String(text || "");
+  return labelEl;
 }
 
 /**
@@ -3853,13 +4322,14 @@ function createDayActions(dayIndex, dayCount, onMoveDay) {
  * @returns {HTMLLIElement}
  */
 function createSlot(options) {
-  var dayIndex = Number.isInteger(Number(options.dayIndex)) ? Number(options.dayIndex) : -1;
-  var slot = options.slot;
-  var label = options.label;
-  var value = options.value;
-  var cost = Number.isFinite(Number(options.cost)) ? Number(options.cost) : 0;
-  var destination = options.destination;
-  var editable = Boolean(options.editable);
+  var safeOptions = options && typeof options === "object" ? options : {};
+  var dayIndex = Number.isInteger(Number(safeOptions.dayIndex)) ? Number(safeOptions.dayIndex) : -1;
+  var slot = safeOptions.slot === "afternoon" || safeOptions.slot === "evening" ? safeOptions.slot : "morning";
+  var label = String(safeOptions.label || "");
+  var value = String(safeOptions.value || "");
+  var cost = Number.isFinite(Number(safeOptions.cost)) ? Number(safeOptions.cost) : 0;
+  var destination = String(safeOptions.destination || "");
+  var editable = Boolean(safeOptions.editable);
   var item = document.createElement("li");
   item.className = "day-slot";
 
@@ -3882,35 +4352,101 @@ function createSlot(options) {
   costValueEl.textContent = formatApproxEuro(cost);
   costEl.appendChild(costValueEl);
 
+  var mapsButton = document.createElement("button");
+  mapsButton.type = "button";
+  mapsButton.className = "activity-map-btn";
+  mapsButton.textContent = "Maps";
+  mapsButton.title = "In Google Maps oeffnen";
+  mapsButton.setAttribute("data-slot-maps", fieldKey);
+  mapsButton.setAttribute("data-slot", slot);
+  mapsButton.setAttribute("data-destination", String(destination || ""));
+  mapsButton.setAttribute("data-activity-text", value);
+  mapsButton.setAttribute("aria-label", label + " in Google Maps oeffnen");
+
   if (editable) {
+    var editorShell = document.createElement("div");
+    editorShell.className = "slot-editor-shell";
+
+    var editorMeta = document.createElement("div");
+    editorMeta.className = "slot-meta-row";
+    editorMeta.appendChild(createSlotHelperLabel("Bearbeiten"));
+
+    var editorActions = document.createElement("div");
+    editorActions.className = "slot-utility-actions";
+
+    var editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "activity-edit";
+    editButton.textContent = "Neue Aktivität";
+    editButton.setAttribute("aria-label", label + " bearbeiten");
+
     var valueEl = document.createElement("input");
     valueEl.type = "text";
     valueEl.id = fieldId;
     valueEl.className = "slot-text slot-input activity-input";
-    valueEl.value = String(value || "");
+    valueEl.value = value;
     valueEl.readOnly = !editable;
     valueEl.setAttribute("aria-label", label);
     valueEl.setAttribute("data-day-index", String(dayIndex));
     valueEl.setAttribute("data-slot", slot);
     valueEl.setAttribute("data-activity-key", fieldKey);
-    valueEl.setAttribute("data-destination", String(destination || ""));
+    valueEl.setAttribute("data-destination", destination);
     valueEl.setAttribute("autocomplete", "off");
     valueEl.setAttribute("spellcheck", "false");
-    valueWrap.appendChild(valueEl);
+    valueEl.placeholder = "Eigene Aktivität eintragen";
+
+    editorActions.appendChild(editButton);
+    editorActions.appendChild(mapsButton);
+    editorMeta.appendChild(editorActions);
+    editorShell.appendChild(editorMeta);
+    editorShell.appendChild(valueEl);
+    updateActivityMapsButtonState(mapsButton, valueEl.value, destination);
+    valueWrap.appendChild(editorShell);
+
+    editButton.addEventListener("click", function handleEditButtonClick() {
+      valueEl.focus();
+      if (typeof valueEl.select === "function") {
+        valueEl.select();
+      }
+    });
+
+    var previewShell = document.createElement("div");
+    previewShell.className = "slot-preview-shell";
+
+    var previewMeta = document.createElement("div");
+    previewMeta.className = "slot-meta-row";
+    previewMeta.appendChild(createSlotHelperLabel("Live-Vorschau"));
+    previewMeta.appendChild(costEl);
+    previewShell.appendChild(previewMeta);
 
     var previewEl = document.createElement("p");
     previewEl.className = "slot-text slot-text-rich";
     previewEl.setAttribute("data-slot-preview", fieldKey);
     previewEl.innerHTML = wrapPlacesWithLinks(value, destination, slot);
-    valueWrap.appendChild(previewEl);
+    previewShell.appendChild(previewEl);
+    valueWrap.appendChild(previewShell);
   } else {
+    var readonlyShell = document.createElement("div");
+    readonlyShell.className = "slot-preview-shell";
+
+    var readonlyMeta = document.createElement("div");
+    readonlyMeta.className = "slot-meta-row";
+    readonlyMeta.appendChild(createSlotHelperLabel("Aktivität"));
+
+    var readonlyActions = document.createElement("div");
+    readonlyActions.className = "slot-utility-actions";
+    readonlyActions.appendChild(costEl);
+    readonlyActions.appendChild(mapsButton);
+    readonlyMeta.appendChild(readonlyActions);
+    readonlyShell.appendChild(readonlyMeta);
+
     var readonlyValueEl = document.createElement("p");
     readonlyValueEl.className = "slot-text slot-text-rich";
     readonlyValueEl.innerHTML = wrapPlacesWithLinks(value, destination, slot);
-    valueWrap.appendChild(readonlyValueEl);
+    readonlyShell.appendChild(readonlyValueEl);
+    updateActivityMapsButtonState(mapsButton, value, destination);
+    valueWrap.appendChild(readonlyShell);
   }
-
-  valueWrap.appendChild(costEl);
 
   item.appendChild(labelEl);
   item.appendChild(valueWrap);
@@ -3918,16 +4454,17 @@ function createSlot(options) {
 }
 
 function createDayNotes(options) {
-  var value = String(options.value || "");
-  var editable = Boolean(options.editable);
-  var onInput = typeof options.onInput === "function" ? options.onInput : null;
+  var safeOptions = options && typeof options === "object" ? options : {};
+  var value = String(safeOptions.value || "");
+  var editable = Boolean(safeOptions.editable);
+  var onInput = typeof safeOptions.onInput === "function" ? safeOptions.onInput : null;
 
   var wrap = document.createElement("div");
   wrap.className = "day-notes";
 
   var labelEl = document.createElement("p");
   labelEl.className = "day-notes-label";
-  labelEl.textContent = String(options.label || "Notizen");
+  labelEl.textContent = String(safeOptions.label || "Notizen");
   wrap.appendChild(labelEl);
 
   if (!editable) {
@@ -3943,7 +4480,7 @@ function createDayNotes(options) {
   notesInput.rows = 2;
   notesInput.placeholder = "z. B. Tisch reservieren oder Tickets kaufen";
   notesInput.value = value;
-  notesInput.setAttribute("aria-label", String(options.label || "Notizen"));
+  notesInput.setAttribute("aria-label", String(safeOptions.label || "Notizen"));
   wrap.appendChild(notesInput);
 
   if (onInput) {
@@ -3964,11 +4501,11 @@ function createSummaryChip(label, value) {
 
   var labelEl = document.createElement("span");
   labelEl.className = "chip-label";
-  labelEl.textContent = label;
+  labelEl.textContent = String(label || "");
 
   var valueEl = document.createElement("span");
   valueEl.className = "chip-value";
-  valueEl.textContent = value;
+  valueEl.textContent = String(value || "");
 
   chip.appendChild(labelEl);
   chip.appendChild(valueEl);
@@ -4000,10 +4537,10 @@ function createBudgetTable(splitPercent, splitAmount) {
     categoryCell.textContent = CATEGORY_LABELS[key];
 
     var percentCell = document.createElement("td");
-    percentCell.textContent = String(splitPercent[key]) + "%";
+    percentCell.textContent = String(Number.isFinite(Number(splitPercent && splitPercent[key])) ? Number(splitPercent[key]) : 0) + "%";
 
     var amountCell = document.createElement("td");
-    amountCell.textContent = formatCurrency(splitAmount[key]);
+    amountCell.textContent = formatCurrency(Number.isFinite(Number(splitAmount && splitAmount[key])) ? Number(splitAmount[key]) : 0);
 
     row.appendChild(categoryCell);
     row.appendChild(percentCell);
@@ -4013,6 +4550,70 @@ function createBudgetTable(splitPercent, splitAmount) {
 
   table.appendChild(body);
   return table;
+}
+
+function createSavedTripCard(savedTrip, callbacks) {
+  var safeTrip = sanitizeStoredTripPayload(savedTrip);
+  if (!safeTrip) {
+    return null;
+  }
+
+  var safeCallbacks = callbacks && typeof callbacks === "object" ? callbacks : {};
+  var tripCard = document.createElement("article");
+  tripCard.className = "saved-trip-item";
+
+  var tripTitle = document.createElement("h3");
+  tripTitle.className = "saved-trip-title";
+  tripTitle.textContent = getSavedTripDisplayTitle(safeTrip);
+  tripCard.appendChild(tripTitle);
+
+  var tripDestination = document.createElement("p");
+  tripDestination.className = "saved-trip-destination";
+  tripDestination.textContent = formatDestinationForDisplay(safeTrip.destination);
+  tripCard.appendChild(tripDestination);
+
+  var tripMeta = document.createElement("div");
+  tripMeta.className = "saved-trip-meta";
+
+  var tripDays = document.createElement("span");
+  tripDays.className = "saved-trip-stat";
+  tripDays.textContent = String(safeTrip.days) + " Tage";
+  tripMeta.appendChild(tripDays);
+
+  var tripBudget = document.createElement("span");
+  tripBudget.className = "saved-trip-stat";
+  tripBudget.textContent = formatCurrency(safeTrip.budget);
+  tripMeta.appendChild(tripBudget);
+
+  tripCard.appendChild(tripMeta);
+
+  var tripActions = document.createElement("div");
+  tripActions.className = "saved-trip-actions";
+
+  var openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.className = "btn-secondary saved-trip-open";
+  openButton.textContent = "Open";
+  openButton.addEventListener("click", function handleOpenSavedTrip() {
+    if (typeof safeCallbacks.onOpen === "function") {
+      safeCallbacks.onOpen(safeTrip);
+    }
+  });
+  tripActions.appendChild(openButton);
+
+  var deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "btn-secondary saved-trip-delete";
+  deleteButton.textContent = "Delete";
+  deleteButton.addEventListener("click", function handleDeleteSavedTrip() {
+    if (typeof safeCallbacks.onDelete === "function") {
+      safeCallbacks.onDelete(safeTrip);
+    }
+  });
+  tripActions.appendChild(deleteButton);
+
+  tripCard.appendChild(tripActions);
+  return tripCard;
 }
 
 /**
@@ -4047,13 +4648,6 @@ function initializePlanner() {
     return;
   }
 
-  console.log("Planner init started");
-  if (typeof window !== "undefined" && window.location) {
-    console.log("URL search:", window.location.search);
-  } else {
-    console.log("URL search:", "");
-  }
-
   var formEl = document.getElementById("trip-form");
   var errorBox = document.getElementById("error-box");
   var resultBox = document.getElementById("result-box");
@@ -4061,6 +4655,8 @@ function initializePlanner() {
   var destinationInput = formEl ? formEl.querySelector("#destination") : null;
   var tripTypeInput = formEl ? formEl.querySelector("#trip-type") : null;
   var destinationTypeHint = document.getElementById("destination-type-hint");
+  var savedTripsList = document.getElementById("saved-trips-list");
+  var savedTripsFeedback = document.getElementById("saved-trips-feedback");
 
   if (!formEl || !errorBox || !resultBox) {
     return;
@@ -4148,6 +4744,176 @@ function initializePlanner() {
     savePlanToLocalStorage(plan, tripId);
   }
 
+  function renderSavedTripsFeedback(message, tone) {
+    if (!savedTripsFeedback) {
+      return;
+    }
+
+    var normalizedMessage = String(message || "").trim();
+    savedTripsFeedback.classList.remove(
+      "is-hidden",
+      "saved-trips-feedback--success",
+      "saved-trips-feedback--error"
+    );
+
+    if (!normalizedMessage) {
+      savedTripsFeedback.textContent = "";
+      savedTripsFeedback.classList.add("is-hidden");
+      return;
+    }
+
+    savedTripsFeedback.textContent = normalizedMessage;
+    if (tone === "error") {
+      savedTripsFeedback.classList.add("saved-trips-feedback--error");
+      return;
+    }
+
+    savedTripsFeedback.classList.add("saved-trips-feedback--success");
+  }
+
+  function openSavedTrip(savedTrip) {
+    var normalizedSavedTrip = sanitizeStoredTripPayload(savedTrip);
+    if (!normalizedSavedTrip) {
+      renderSavedTripsFeedback("Gespeicherter Trip konnte nicht geladen werden.", "error");
+      renderSavedTripsList();
+      return;
+    }
+
+    clearPendingPlanUpdateTimer();
+    clearCollabStatusResetTimer();
+    teardownTripRealtimeSubscription();
+
+    var savedInput = mapSavedPlanToInput({
+      destination: normalizedSavedTrip.destination,
+      tripTitle: sanitizeOptionalText(normalizedSavedTrip.tripTitle || normalizedSavedTrip.title || "", 120),
+      groupName: sanitizeOptionalText(normalizedSavedTrip.groupName || "", 120),
+      members: normalizeTripMembers(normalizedSavedTrip.members),
+      days: normalizedSavedTrip.days,
+      budget: normalizedSavedTrip.budget,
+      tripType: normalizeTripType(normalizedSavedTrip.tripType)
+    });
+
+    var builtPlan = buildTripPlan(savedInput);
+    applySavedPlanEdits(builtPlan, { dailyPlan: normalizedSavedTrip.dailyPlan || normalizedSavedTrip.itinerary || [] });
+    ensureItineraryNotes(builtPlan);
+
+    currentPlan = builtPlan;
+    currentTripId = normalizedSavedTrip.tripId && isUuid(normalizedSavedTrip.tripId)
+      ? String(normalizedSavedTrip.tripId)
+      : null;
+    startupSavedPlan = normalizedSavedTrip;
+    startupSavedPlanConsumed = true;
+    collabStatusMessage = "";
+    collabLastSavedAt = parseDateLike(normalizedSavedTrip.createdAt) || new Date();
+
+    setFormValuesFromInput(savedInput);
+    updateDestinationTypeSuggestion(false);
+    renderErrors([], errorBox);
+
+    if (currentTripId && isLiveSyncAvailable()) {
+      setCollabStatus("synced", "", collabLastSavedAt || false);
+    } else if (currentTripId) {
+      setCollabStatus("inactive", "", collabLastSavedAt || false);
+    } else {
+      setCollabStatus("local-saved", "", collabLastSavedAt || false);
+    }
+
+    renderPlan(currentPlan, resultBox, formEl, {
+      onItineraryFieldInput: handleItineraryFieldInput,
+      onMoveDay: handleMoveDay,
+      onSaveTrip: handleSaveTrip,
+      collabStatusState: collabStatusState,
+      collabStatusMessage: collabStatusMessage,
+      collabLastSavedAt: collabLastSavedAt
+    });
+
+    if (resetButton) {
+      resetButton.classList.remove("is-hidden");
+    }
+
+    savePlanSnapshotLocally(currentPlan, currentTripId);
+
+    if (currentTripId) {
+      ensureTripRealtimeSubscription(currentTripId);
+      syncTripQueryInAddressBar(currentTripId);
+    } else {
+      syncShareQueryInAddressBar(savedInput);
+    }
+
+    renderSavedTripsList();
+    renderSavedTripsFeedback("Reise geladen.", "success");
+
+    if (
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 768px)").matches
+    ) {
+      window.setTimeout(function scrollToLoadedTrip() {
+        resultBox.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 120);
+    }
+  }
+
+  function renderSavedTripsList() {
+    if (!savedTripsList) {
+      return;
+    }
+
+    clearElement(savedTripsList);
+    var savedTrips = getSavedTripsFromLocalStorage()
+      .map(sanitizeStoredTripPayload)
+      .filter(Boolean);
+
+    if (!savedTrips.length) {
+      var emptyState = document.createElement("p");
+      emptyState.className = "saved-trips-empty";
+      emptyState.textContent = "Noch keine Reisen gespeichert.";
+      savedTripsList.appendChild(emptyState);
+      return;
+    }
+
+    savedTrips.forEach(function (savedTrip) {
+      var tripCard = createSavedTripCard(savedTrip, {
+        onOpen: openSavedTrip,
+        onDelete: function handleDeleteSavedTrip(tripToDelete) {
+          if (!deleteSavedTripFromLocalStorage(tripToDelete.id)) {
+            renderSavedTripsFeedback("Trip konnte nicht geloescht werden.", "error");
+            return;
+          }
+
+          renderSavedTripsList();
+          renderSavedTripsFeedback("Trip geloescht.", "success");
+        }
+      });
+
+      if (tripCard) {
+        savedTripsList.appendChild(tripCard);
+      }
+    });
+  }
+
+  function handleSaveTrip(planToSave) {
+    var resolvedPlan = planToSave && planToSave.input ? planToSave : currentPlan;
+    if (!resolvedPlan || !resolvedPlan.input) {
+      renderSavedTripsFeedback("Bitte generiere zuerst einen Reiseplan.", "error");
+      return;
+    }
+
+    var savedTrip = saveTripToMyTrips(resolvedPlan, currentTripId);
+    if (!savedTrip) {
+      renderSavedTripsFeedback("Speichern im Browser ist aktuell nicht verfuegbar.", "error");
+      return;
+    }
+
+    renderSavedTripsList();
+    renderSavedTripsFeedback("Reise gespeichert.", "success");
+  }
+
+  /**
+   * @param {TripPlan} plan
+   * @param {string | null | undefined} tripId
+   * @param {boolean} allowOverlay
+   */
   /**
    * @param {TripPlan} plan
    * @param {string | null | undefined} tripId
@@ -4335,11 +5101,16 @@ function initializePlanner() {
       dayPlan[slot + "Cost"] = nextSlotCost;
       dayPlan.estimatedCost = getDayEstimatedCost(dayPlan);
 
-      var dayCostValueEl = resultBox.querySelector('[data-day-estimated-cost="' + dayIndex + '"]');
+      var dayCostValueEl =
+        resultBox && typeof resultBox.querySelector === "function"
+          ? resultBox.querySelector('[data-day-estimated-cost="' + dayIndex + '"]')
+          : null;
       if (dayCostValueEl) {
         dayCostValueEl.textContent = formatCurrency(dayPlan.estimatedCost);
       }
-      updateDayBudgetStatusDisplay(resultBox, dayIndex, dayPlan.estimatedCost, Number(currentPlan.dailyBudget || 0));
+      if (resultBox) {
+        updateDayBudgetStatusDisplay(resultBox, dayIndex, dayPlan.estimatedCost, Number(currentPlan.dailyBudget || 0));
+      }
     }
 
     savePlanSnapshotLocally(currentPlan, currentTripId);
@@ -4363,7 +5134,7 @@ function initializePlanner() {
     if (!target || !target.classList || !target.classList.contains("activity-input")) {
       return null;
     }
-    if (!resultBox.contains(target)) {
+    if (!resultBox || !resultBox.contains(target)) {
       return null;
     }
     var slot = String(target.getAttribute("data-slot") || "").trim();
@@ -4383,12 +5154,17 @@ function initializePlanner() {
     };
   }
   function refreshEditableActivityUi(meta, nextCost) {
-    if (!meta || !meta.inputEl) {
+    if (!meta || !meta.inputEl || !resultBox || typeof resultBox.querySelector !== "function") {
       return;
     }
+    var liveDestination = String(meta.inputEl.getAttribute("data-destination") || meta.destination || "");
     var previewEl = resultBox.querySelector('[data-slot-preview="' + meta.key + '"]');
     if (previewEl) {
-      previewEl.innerHTML = wrapPlacesWithLinks(meta.inputEl.value, meta.destination, meta.slot);
+      previewEl.innerHTML = wrapPlacesWithLinks(meta.inputEl.value, liveDestination, meta.slot);
+    }
+    var mapsButton = resultBox.querySelector('[data-slot-maps="' + meta.key + '"]');
+    if (mapsButton) {
+      updateActivityMapsButtonState(mapsButton, meta.inputEl.value, liveDestination);
     }
     if (Number.isFinite(Number(nextCost))) {
       var costValueEl = resultBox.querySelector('[data-slot-cost="' + meta.key + '"]');
@@ -4412,6 +5188,47 @@ function initializePlanner() {
     }
     var nextCost = handleItineraryFieldInput(meta.dayIndex, meta.slot, meta.inputEl.value, true);
     refreshEditableActivityUi(meta, nextCost);
+  }
+  function getDelegatedMapsButtonMeta(target) {
+    if (!target || typeof target.closest !== "function") {
+      return null;
+    }
+
+    var buttonEl = target.closest(".activity-map-btn");
+    if (!buttonEl || !resultBox || !resultBox.contains(buttonEl) || buttonEl.disabled) {
+      return null;
+    }
+
+    var key = String(buttonEl.getAttribute("data-slot-maps") || "").trim();
+    var inputEl = key ? resultBox.querySelector('[data-activity-key="' + key + '"]') : null;
+    var activityText = inputEl && typeof inputEl.value === "string"
+      ? inputEl.value
+      : String(buttonEl.getAttribute("data-activity-text") || "");
+    var destination = inputEl
+      ? String(inputEl.getAttribute("data-destination") || buttonEl.getAttribute("data-destination") || "")
+      : String(buttonEl.getAttribute("data-destination") || "");
+
+    return {
+      buttonEl: buttonEl,
+      activityText: activityText,
+      destination: destination
+    };
+  }
+  function handleDelegatedMapsButtonClick(event) {
+    var meta = getDelegatedMapsButtonMeta(event.target);
+    if (!meta) {
+      return;
+    }
+
+    updateActivityMapsButtonState(meta.buttonEl, meta.activityText, meta.destination);
+    if (meta.buttonEl.disabled) {
+      return;
+    }
+
+    var opened = openActivityInGoogleMaps(meta.activityText, meta.destination);
+    if (opened) {
+      event.preventDefault();
+    }
   }
   function handleMoveDay(dayIndex, direction) {
     if (!currentPlan || !Array.isArray(currentPlan.itinerary)) {
@@ -4443,6 +5260,7 @@ function initializePlanner() {
     renderPlan(currentPlan, resultBox, formEl, {
       onItineraryFieldInput: handleItineraryFieldInput,
       onMoveDay: handleMoveDay,
+      onSaveTrip: handleSaveTrip,
       collabStatusState: collabStatusState,
       collabStatusMessage: collabStatusMessage,
       collabLastSavedAt: collabLastSavedAt
@@ -4529,6 +5347,7 @@ function initializePlanner() {
     renderPlan(loadedTrip.plan, resultBox, formEl, {
       onItineraryFieldInput: handleItineraryFieldInput,
       onMoveDay: handleMoveDay,
+      onSaveTrip: handleSaveTrip,
       collabStatusState: collabStatusState,
       collabStatusMessage: collabStatusMessage,
       collabLastSavedAt: collabLastSavedAt
@@ -4595,6 +5414,7 @@ function initializePlanner() {
     renderPlan(builtPlan, resultBox, formEl, {
       onItineraryFieldInput: handleItineraryFieldInput,
       onMoveDay: handleMoveDay,
+      onSaveTrip: handleSaveTrip,
       collabStatusState: collabStatusState,
       collabStatusMessage: collabStatusMessage,
       collabLastSavedAt: collabLastSavedAt
@@ -4673,8 +5493,9 @@ function initializePlanner() {
     event.preventDefault();
     generatePlanFromForm();
   });
-  document.addEventListener("input", handleDelegatedActivityInput);
-  document.addEventListener("focusout", handleDelegatedActivityCommit, true);
+  resultBox.addEventListener("input", handleDelegatedActivityInput);
+  resultBox.addEventListener("focusout", handleDelegatedActivityCommit, true);
+  resultBox.addEventListener("click", handleDelegatedMapsButtonClick);
 
   if (destinationInput) {
     destinationInput.addEventListener("input", function handleDestinationInput() {
@@ -4721,6 +5542,8 @@ function initializePlanner() {
     window.addEventListener("beforeunload", teardownTripRealtimeSubscription);
   }
 
+  renderSavedTripsList();
+
   var tripIdFromUrl = getTripIdFromUrl();
   if (tripIdFromUrl) {
     currentTripId = tripIdFromUrl;
@@ -4731,7 +5554,6 @@ function initializePlanner() {
   var sharedInput = applyShareParamsToForm(formEl);
   updateDestinationTypeSuggestion(false);
   if (sharedInput) {
-    console.log("Auto restore executed");
     setTimeout(function () {
       generatePlanFromInput(sharedInput, false, true);
     }, 0);
@@ -4799,6 +5621,9 @@ if (typeof module !== "undefined" && module.exports) {
     loadSavedPlanFromLocalStorage: loadSavedPlanFromLocalStorage,
     savePlanToLocalStorage: savePlanToLocalStorage,
     clearSavedPlanFromLocalStorage: clearSavedPlanFromLocalStorage,
+    getSavedTripsFromLocalStorage: getSavedTripsFromLocalStorage,
+    saveTripToMyTrips: saveTripToMyTrips,
+    deleteSavedTripFromLocalStorage: deleteSavedTripFromLocalStorage,
     saveTripToSupabase: saveTripToSupabase,
     updateTripPlanInSupabase: updateTripPlanInSupabase,
     loadTripFromSupabase: loadTripFromSupabase,
